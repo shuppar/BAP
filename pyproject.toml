@@ -1,0 +1,163 @@
+# Project metadata and Python dependencies for the snRNA-seq prenatal-stress pipeline.
+# Managed by uv (https://github.com/astral-sh/uv).
+#
+# To set up the environment:
+#   uv sync
+#
+# To add a new dependency:
+#   uv add <package>
+#
+# The lock file (uv.lock) is generated and MUST be committed to git for reproducibility.
+#
+# ----------------------------------------------------------------------------
+# IMPORTANT NOTES ABOUT THIS DEP SET
+# ----------------------------------------------------------------------------
+# This dependency set was verified to resolve cleanly on:
+#   - Python 3.12 / macOS ARM64 (Apple Silicon dev laptop)
+#   - Python 3.12 / Linux x86_64 (workstation)
+#
+# Packages deliberately NOT in the main dependencies (and why):
+#   - cellrank: drags in pygpcca==1.0.4 which pins jinja2==3.0.3, conflicting with
+#               jupyter/papermill. Moved to optional [trajectory] extra; install in
+#               a separate venv when Phase 8d trajectory analysis is actually run.
+#   - CellBender: pins PyTorch tightly; runs in its own .venv-cellbender/ (see
+#                 setup-remote.sh). Called from Python via subprocess.
+#   - rapids-singlecell: only useful with NVIDIA GPU and very high-memory contexts.
+#                        Not needed at this dataset size; would just complicate the
+#                        Mac dev environment.
+
+[project]
+name = "snrna-prenatal-stress"
+version = "0.1.0"
+description = "snRNA-seq analysis of prenatal stress in mouse brain & placenta (10x Flex)"
+readme = "README-env.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Lab" },
+]
+
+# Core dependencies. Versions chosen to be compatible across Mac ARM + Linux x86_64.
+# Each pin documented inline so future-you knows why it's there.
+dependencies = [
+    # --- Core single-cell stack ---
+    "anndata>=0.11",                        # AnnData object format (0.12 series active mid-2026)
+    "scanpy>=1.10",                         # single-cell core
+    "scvi-tools>=1.3",                      # scVI/scANVI integration (BF16 + Lightning 2.x)
+    "scrublet>=0.2.3",                      # doublet detection (Python cross-check for scDblFinder)
+
+    # --- PyTorch (matched to CUDA on the workstation, MPS-capable on Mac) ---
+    # On Mac ARM: installs Apple Silicon (MPS) build automatically.
+    # On Linux: pulls in the CUDA 12.x build matching the workstation's driver 580.x.
+    "torch>=2.4",
+    "pytorch-lightning>=2.2",
+
+    # --- Differential expression & pathway ---
+    "pydeseq2>=0.4",                        # pseudobulk DE (DESeq2 port for Python)
+    "decoupler>=2.0",                       # GSEA + TF activity (formerly decoupler-py)
+    "omnipath>=1.0",                        # resource used by decoupler
+
+    # --- Composition ---
+    "sccoda>=0.1.9",                        # Bayesian compositional analysis
+
+    # --- Trajectory & velocity (P0 brain only) ---
+    "scvelo>=0.3",                          # RNA velocity (with Flex feasibility diagnostic)
+    # NOTE: cellrank for fate analysis is in [trajectory] optional extras — see below.
+
+    # --- Cell-cell communication ---
+    "liana>=1.5",                           # consensus CCC framework
+                                            # Configured to use Python methods by default;
+                                            # R methods (CellChat) called as subprocesses
+                                            # via scripts/ (see project doc §12).
+
+    # --- Plotting & reporting ---
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "plotly>=5.20",
+    "jupyterlab>=4.0",
+    "ipykernel>=6.29",
+    "ipywidgets>=8.1",
+
+    # --- IO & config ---
+    "pyyaml>=6.0",                          # YAML config parsing
+    "h5py>=3.10",                           # 10x .h5 files
+    "tables>=3.9",                          # AnnData HDF5 backing (PyTables)
+    "openpyxl>=3.1",                        # Excel I/O for sample manifests
+
+    # --- Scientific Python core ---
+    # No upper bound on numpy: scvi-tools 1.3+ and anndata 0.11+ work with NumPy 2.x.
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "pandas>=2.2,<3.0",                     # pandas 3.0 will be breaking; pin for now
+    "scikit-learn>=1.4",
+
+    # --- Utilities ---
+    "tqdm>=4.66",
+    "rich>=13.7",                           # nicer logging + tracebacks
+    "click>=8.1",                           # CLI for run.py
+    "pydantic>=2.0",                        # config schema validation (used by src/snrna/config.py)
+
+    # --- Reporting ---
+    "papermill>=2.5",                       # parameterized notebook runs (HTML reports)
+
+    # --- Provenance / reproducibility ---
+    "psutil>=5.9",                          # RAM peak logging
+    "gitpython>=3.1",                       # capture git SHA into manifest.json
+]
+
+[project.optional-dependencies]
+# Development tools. Install with: uv sync --extra dev
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",                            # linter + formatter (replaces flake8 + black)
+    "mypy>=1.10",                           # type checking
+    "pre-commit>=3.7",
+]
+
+# Integration benchmarking. Install with: uv sync --extra metrics
+metrics = [
+    "scib>=1.1.5",
+]
+
+# Trajectory / fate analysis for Phase 8d ONLY.
+# Drags in jinja2==3.0.3 pin via pygpcca, conflicting with the main env.
+# Install in a separate venv when actually needed:
+#   uv venv .venv-trajectory --python 3.12
+#   uv pip install --python .venv-trajectory/bin/python "cellrank>=2.0,<3.0"
+# Then call CellRank scripts from .venv-trajectory while staying in the main env for everything else.
+trajectory = [
+    "cellrank>=2.0,<3.0",
+]
+
+[project.scripts]
+# After `uv sync`, this becomes available in the activated venv as `snrna`:
+#   snrna --config config/brain.yaml --step validate
+snrna = "snrna.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/snrna"]
+
+# --- uv configuration ---
+[tool.uv]
+# Let uv manage Python: it'll download CPython 3.12 if the system doesn't have it.
+managed = true
+
+# --- Ruff (linter/formatter) configuration ---
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]                           # line length handled by formatter
+
+# --- Pytest configuration ---
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

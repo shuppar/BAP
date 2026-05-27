@@ -1,0 +1,22 @@
+# Python venv (recreated from uv.lock)
+.venv/
+
+# uv / pip caches
+.uv-cache/
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data — never commit
+data/
+*.h5ad
+*.h5
+*.loom
+
+# Pipeline outputs — regeneratable
+results/
+
+# OS
+.DS_Store
