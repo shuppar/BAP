@@ -31,6 +31,8 @@ qc:
   pct_mt_max: 1.0
   pct_hemo_max: 5.0
   n_mads: 5
+  min_counts: 500       # hard UMI floor
+  min_genes: 200        # hard gene floor
 
 random_seed: 42
 

@@ -88,6 +88,12 @@ def compute_thresholds(adata, qc_cfg: dict) -> dict:
       pct_mt_max     — typically 1.0 (nuclei should have near-zero %mt)
       pct_hemo_max   — typically 5.0 (catches hemoglobin contamination)
 
+    Hard floors (optional; AND'd with MAD bounds — cell must pass BOTH):
+      min_counts     — absolute UMI floor (e.g. 500). Catches debris even if a
+                       sample's distribution is shifted so its MAD lower bound
+                       lands below this. Omit from config to skip.
+      min_genes      — absolute gene floor (e.g. 200). Same logic.
+
     MAD-based (per-sample, adaptive):
       n_genes:       [median - n_mads*MAD, median + n_mads*MAD]
       total_counts:  same, in log1p space (counts are heavily right-skewed)
@@ -113,19 +119,30 @@ def compute_thresholds(adata, qc_cfg: dict) -> dict:
         "n_genes_hi": n_genes_hi,
         "total_counts_lo": counts_lo,
         "total_counts_hi": counts_hi,
+        # Hard floors — None means "don't apply". The filter step uses max() of
+        # these and the MAD bounds, so a cell must clear BOTH.
+        "min_counts_floor": qc_cfg.get("min_counts"),
+        "min_genes_floor": qc_cfg.get("min_genes"),
         "n_mads": n_mads,
     }
 
 
 def apply_filters(adata, thr: dict):
-    """Return (filtered_adata, mask) where mask is a per-cell bool array (True = keep)."""
+    """Return (filtered_adata, mask) where mask is a per-cell bool array (True = keep).
+
+    Hard floors (min_counts_floor, min_genes_floor) AND'd with MAD bounds:
+    a cell must clear BOTH the MAD lower bound AND the absolute floor.
+    """
     o = adata.obs
+    # Effective lower bounds: max of MAD bound and absolute floor (if set)
+    n_genes_lo = max(thr["n_genes_lo"], thr["min_genes_floor"] or 0)
+    counts_lo  = max(thr["total_counts_lo"], thr["min_counts_floor"] or 0)
     mask = (
         (o["pct_counts_mt"] <= thr["pct_mt_max"])
         & (o["pct_counts_hemo"] <= thr["pct_hemo_max"])
-        & (o["n_genes_by_counts"] >= thr["n_genes_lo"])
+        & (o["n_genes_by_counts"] >= n_genes_lo)
         & (o["n_genes_by_counts"] <= thr["n_genes_hi"])
-        & (o["total_counts"] >= thr["total_counts_lo"])
+        & (o["total_counts"] >= counts_lo)
         & (o["total_counts"] <= thr["total_counts_hi"])
     )
     return adata[mask].copy(), mask

@@ -38,7 +38,9 @@ SHARED_CONFIG = {
     "qc": {
         "pct_mt_max": 1.0,          # snRNA: should be near zero
         "pct_hemo_max": 5.0,        # critical for placenta
-        "n_mads": 5,                # MAD-based gene/UMI thresholds
+        "n_mads": 5,                # MAD-based bounds on n_genes & log-counts
+        "min_counts": 500,          # hard UMI floor (debris below this)
+        "min_genes": 200,           # hard gene floor (uninformative below this)
     },
     "sex_markers": {
         "y_linked": ["Ddx3y", "Uty", "Eif2s3y", "Kdm5d"],
