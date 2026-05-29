@@ -1,0 +1,39 @@
+# config/dev.yaml — overrides brain.yaml for laptop testing
+#
+# Use this instead of brain.yaml on the Mac:
+#   uv run python scripts/01_validate.py --config config/dev.yaml
+#
+# What it does:
+#   - Picks 3 brain samples (one per group, same age, all male)
+#   - Downsamples each to 500 cells
+#   - Writes results to results/dev/ (so it doesn't pollute results/brain/)
+
+tissue: brain
+profile: dev
+results_dir: results/dev
+group_reference: Relaxed
+
+# Subset: only these 3 samples, 500 cells each.
+# The validate script reads the full brain.yaml but filters to these IDs.
+subset:
+  enabled: true
+  sample_ids: [E1-4WkM1, L1-4WkM1, S1-4WkM1]   # one per group
+  max_cells_per_sample: 500
+  random_seed: 42
+
+# Sex markers (same as full config — duplicated for self-containedness)
+sex_markers:
+  y_linked: [Ddx3y, Uty, Eif2s3y, Kdm5d]
+  x_linked: [Xist]
+
+# QC thresholds (same as full config)
+qc:
+  pct_mt_max: 1.0
+  pct_hemo_max: 5.0
+  n_mads: 5
+
+random_seed: 42
+
+# Point at the full sample manifest — the script reads samples from brain.yaml,
+# then filters to subset.sample_ids
+samples_from: config/brain.yaml

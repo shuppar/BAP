@@ -18,8 +18,8 @@ Usage:
   python scripts/01_validate.py --config config/brain.yaml --no-fingerprints  # skip slow per-sample loading
 
 Output files (in results/{tissue}/validation/):
-  - manifest_balance.csv          : samples per (age, condition, sex)
-  - library_confound.csv          : library × condition × sex table
+  - manifest_balance.csv          : samples per (age, group, sex)
+  - library_confound.csv          : library × group × sex table
   - sample_fingerprints.csv       : per-sample QC summary
   - sex_check.csv                 : declared vs. inferred sex per sample
   - balance_heatmap.png
@@ -44,18 +44,45 @@ import yaml
 # Helpers (kept short and inline — easier to read than importing from elsewhere)
 # ----------------------------------------------------------------------------
 
-REQUIRED_SAMPLE_FIELDS = ["id", "donor_id", "h5", "age", "condition", "sex", "library"]
-VALID_CONDITIONS = {"stress", "control"}
-VALID_SEXES = {"M", "F"}
+REQUIRED_SAMPLE_FIELDS = ["id", "donor_id", "h5", "age", "group", "sex", "pool", "library"]
+VALID_GROUPS = {"Early_Stress", "Late_Stress", "Relaxed"}
+VALID_SEXES = {"M", "F", "unknown"}
 
 
 def load_config(path: Path) -> dict:
     """Load YAML config. Returns a plain dict — no schema validation, fail-on-use.
 
-    Relative h5 paths are resolved relative to the current working directory
-    (i.e., the project root if you run from there)."""
+    Supports the dev.yaml indirection pattern:
+      - If the config has `samples_from: <other.yaml>`, samples are loaded from that file.
+      - If `subset.enabled: true` with `subset.sample_ids: [...]`, samples are filtered
+        to that ID list (order preserved from the source manifest).
+
+    Relative h5 paths are resolved relative to the current working directory.
+    """
     with path.open() as f:
         cfg = yaml.safe_load(f)
+
+    # Indirection: pull sample records from another YAML if requested
+    if "samples_from" in cfg:
+        src = Path(cfg["samples_from"])
+        with src.open() as f:
+            src_cfg = yaml.safe_load(f)
+        cfg["samples"] = src_cfg["samples"]
+
+    # Subset by explicit ID list (dev mode)
+    subset = cfg.get("subset", {})
+    if subset.get("enabled", False):
+        ids = set(subset.get("sample_ids", []))
+        if not ids:
+            sys.exit("ERROR: subset.enabled=true but subset.sample_ids is empty")
+        before = len(cfg["samples"])
+        cfg["samples"] = [s for s in cfg["samples"] if s["id"] in ids]
+        missing = ids - {s["id"] for s in cfg["samples"]}
+        if missing:
+            sys.exit(f"ERROR: subset.sample_ids not found in manifest: {sorted(missing)}")
+        print(f"  Subset: {len(cfg['samples'])}/{before} samples ({sorted(ids)})")
+
+    # Resolve h5 paths
     cwd = Path.cwd()
     for s in cfg["samples"]:
         h5 = Path(s["h5"])
@@ -79,8 +106,8 @@ def validate_manifest(samples: list[dict]) -> list[str]:
             errors.append(f"duplicate sample id: {s['id']}")
         ids_seen.add(s["id"])
         # Enum-like fields
-        if s["condition"] not in VALID_CONDITIONS:
-            errors.append(f"{s['id']}: condition={s['condition']!r}, expected one of {VALID_CONDITIONS}")
+        if s["group"] not in VALID_GROUPS:
+            errors.append(f"{s['id']}: group={s['group']!r}, expected one of {VALID_GROUPS}")
         if s["sex"] not in VALID_SEXES:
             errors.append(f"{s['id']}: sex={s['sex']!r}, expected one of {VALID_SEXES}")
         # File existence
@@ -90,17 +117,17 @@ def validate_manifest(samples: list[dict]) -> list[str]:
 
 
 def balance_table(samples: list[dict]) -> pd.DataFrame:
-    """Sample counts per (age, condition, sex). Useful sanity-check on the design."""
+    """Sample counts per (age, group, sex). Useful sanity-check on the design."""
     df = pd.DataFrame(samples)
-    counts = df.groupby(["age", "condition", "sex"]).size().reset_index(name="n_samples")
+    counts = df.groupby(["age", "group", "sex"]).size().reset_index(name="n_samples")
     return counts
 
 
 def library_confound_table(samples: list[dict]) -> pd.DataFrame:
-    """library × condition × sex counts. If condition perfectly co-varies with library,
+    """library × group × sex counts. If group perfectly co-varies with library,
     integration can't separate the two and the experiment is fundamentally confounded."""
     df = pd.DataFrame(samples)
-    return pd.crosstab(df["library"], [df["condition"], df["sex"]])
+    return pd.crosstab(df["library"], [df["group"], df["sex"]])
 
 
 def compute_fingerprint(h5_path: Path, sample_id: str) -> dict:
@@ -165,22 +192,22 @@ def infer_sex(h5_path: Path, y_markers: list[str], x_markers: list[str]) -> dict
 
 
 def plot_balance(df: pd.DataFrame, out: Path) -> None:
-    """Heatmap: rows=condition×sex, cols=age, cells=n_samples."""
-    pivot = df.pivot_table(index=["condition", "sex"], columns="age",
+    """Heatmap: rows=group×sex, cols=age, cells=n_samples."""
+    pivot = df.pivot_table(index=["group", "sex"], columns="age",
                           values="n_samples", fill_value=0).astype(int)
     fig, ax = plt.subplots(figsize=(6, 4))
     sns.heatmap(pivot, annot=True, fmt="d", cmap="Blues", ax=ax, cbar_kws={"label": "n samples"})
-    ax.set_title("Sample balance: condition × sex × age")
+    ax.set_title("Sample balance: group × sex × age")
     fig.tight_layout()
     fig.savefig(out, dpi=120)
     plt.close(fig)
 
 
 def plot_library_confound(df: pd.DataFrame, out: Path) -> None:
-    """Heatmap of library × (condition, sex). Warn if any row has zeros."""
+    """Heatmap of library × (group, sex). Warn if any row has zeros."""
     fig, ax = plt.subplots(figsize=(8, max(3, 0.5 * len(df))))
     sns.heatmap(df, annot=True, fmt="d", cmap="Reds", ax=ax)
-    ax.set_title("Library confound check (samples per library × condition × sex)")
+    ax.set_title("Library confound check (samples per library × group × sex)")
     fig.tight_layout()
     fig.savefig(out, dpi=120)
     plt.close(fig)
@@ -188,13 +215,16 @@ def plot_library_confound(df: pd.DataFrame, out: Path) -> None:
 
 def plot_sex_check(df: pd.DataFrame, out: Path) -> None:
     """Y-score vs Xist-score per sample, colored by declared sex.
+    'unknown' declared (E12.5 placenta) plotted in gray — no mismatch check.
     Mismatches stand out: e.g., a 'declared M' point in the upper-left (high Xist, low Y)."""
     fig, ax = plt.subplots(figsize=(6, 5))
-    for sex, color in zip(["M", "F"], ["steelblue", "salmon"]):
+    for sex, color in zip(["M", "F", "unknown"], ["steelblue", "salmon", "lightgray"]):
         sub = df[df["declared_sex"] == sex]
-        ax.scatter(sub["y_score"], sub["x_score"], c=color, label=f"declared={sex}", s=80, alpha=0.7)
-    # Flag mismatches with an X
-    mismatch = df[df["declared_sex"] != df["inferred_sex"]]
+        if len(sub):
+            ax.scatter(sub["y_score"], sub["x_score"], c=color, label=f"declared={sex}", s=80, alpha=0.7)
+    # Flag mismatches only where sex was declared (not 'unknown')
+    declared = df[df["declared_sex"].isin(["M", "F"])]
+    mismatch = declared[declared["declared_sex"] != declared["inferred_sex"]]
     if len(mismatch):
         ax.scatter(mismatch["y_score"], mismatch["x_score"],
                   marker="x", c="black", s=200, linewidths=3, label="mismatch")
@@ -229,12 +259,6 @@ def main():
     print(f"Tissue: {cfg['tissue']}")
     print(f"Samples: {len(samples)}")
 
-    # Apply dev-mode subset if enabled
-    if cfg.get("subset", {}).get("enabled", False):
-        max_n = cfg["subset"]["max_samples"]
-        samples = samples[:max_n]
-        print(f"Dev subset enabled — using first {len(samples)} samples")
-
     # --- 1. Manifest validation ---
     print("\n[1/4] Validating manifest...")
     errors = validate_manifest(samples)
@@ -268,7 +292,7 @@ def main():
     single_combo_libs = [lib for lib, n in per_lib_combos.items()
                         if confound.loc[lib].astype(bool).sum() == 1]
     if single_combo_libs:
-        print(f"  ⚠ Libraries with only ONE (condition, sex) combination: {single_combo_libs}")
+        print(f"  ⚠ Libraries with only ONE (group, sex) combination: {single_combo_libs}")
         print(f"     (this would confound library effects with biology — check carefully)")
 
     # --- 4. Per-sample fingerprints + sex check ---
@@ -297,12 +321,17 @@ def main():
         print(f"\n[4/4] Sex check (Y-linked vs Xist)...")
         sx_df = pd.DataFrame(sex_checks)
         sx_df.to_csv(out_dir / "sex_check.csv", index=False)
-        mismatches = sx_df[sx_df["declared_sex"] != sx_df["inferred_sex"]]
+        # Only flag mismatches where sex was actually declared (not 'unknown' E12.5 placenta)
+        declared = sx_df[sx_df["declared_sex"].isin(["M", "F"])]
+        mismatches = declared[declared["declared_sex"] != declared["inferred_sex"]]
+        n_unknown = (sx_df["declared_sex"] == "unknown").sum()
         if len(mismatches):
             print(f"  ⚠ {len(mismatches)} sex MISMATCH(es):")
             print(mismatches.to_string(index=False))
         else:
-            print(f"  ✓ All {len(sx_df)} samples: declared sex matches inferred sex")
+            print(f"  ✓ All {len(declared)} declared-sex samples: declared matches inferred")
+        if n_unknown:
+            print(f"  ℹ {n_unknown} sample(s) with declared sex='unknown' (E12.5 placenta) — sex inferred from Y/Xist")
         plot_sex_check(sx_df, out_dir / "sex_check_scatter.png")
 
     # --- Summary ---

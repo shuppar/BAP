@@ -20,3 +20,31 @@ results/
 
 # OS
 .DS_Store
+
+# Additional Python envs (CellBender, trajectory — see pyproject.toml)
+.venv-cellbender/
+.venv-trajectory/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# R environment
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.renv-cache/
+renv/library/
+renv/python/
+renv/staging/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+logs/
