@@ -41,30 +41,8 @@ import pandas as pd
 import scanpy as sc
 import scipy.io as sio
 import scipy.sparse as sp
-import yaml
 
-
-# ----------------------------------------------------------------------------
-# Config loader — same as other phases
-# ----------------------------------------------------------------------------
-
-def load_config(path: Path) -> dict:
-    with path.open() as f:
-        cfg = yaml.safe_load(f)
-    if "samples_from" in cfg:
-        with Path(cfg["samples_from"]).open() as f:
-            src = yaml.safe_load(f)
-        cfg["samples"] = src["samples"]
-    subset = cfg.get("subset", {})
-    if subset.get("enabled", False):
-        ids = set(subset.get("sample_ids", []))
-        before = len(cfg["samples"])
-        cfg["samples"] = [s for s in cfg["samples"] if s["id"] in ids]
-        missing = ids - {s["id"] for s in cfg["samples"]}
-        if missing:
-            sys.exit(f"ERROR: subset.sample_ids not in manifest: {sorted(missing)}")
-        print(f"  Subset: {len(cfg['samples'])}/{before} samples")
-    return cfg
+from _utils import load_config, phase_paths
 
 
 # ----------------------------------------------------------------------------
@@ -189,12 +167,12 @@ def main():
         sys.exit("ERROR: Rscript not in PATH. Install R (brew install r) and retry.")
 
     cfg = load_config(args.config)
-    results_dir = Path(cfg["results_dir"])
-    in_dir = results_dir / "h5ad" / "03_qc_filtered"
-    out_dir = results_dir / "h5ad" / "04_doublets_removed"
-    plot_dir = results_dir / "plots" / "03_doublets"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    plot_dir.mkdir(parents=True, exist_ok=True)
+    # Input dir comes from the previous phase's output dir
+    prev_paths = phase_paths(cfg, "qc")
+    in_dir = prev_paths["h5ad"]
+    paths = phase_paths(cfg, "doublets")
+    out_dir = paths["h5ad"]
+    plot_dir = paths["plots"]
 
     seed = cfg.get("random_seed", 42)
 
@@ -246,8 +224,7 @@ def main():
             })
 
     summary = pd.DataFrame(rows)
-    summary_path = results_dir / "tables" / "summary_doublets.csv"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path = paths["tables"] / "summary_doublets.csv"
     summary.to_csv(summary_path, index=False)
     plot_rate_per_sample(summary, plot_dir / "doublet_rate_per_sample.png")
 

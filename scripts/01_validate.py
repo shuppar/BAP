@@ -38,7 +38,8 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import seaborn as sns
-import yaml
+
+from _utils import load_config
 
 # ----------------------------------------------------------------------------
 # Helpers (kept short and inline — easier to read than importing from elsewhere)
@@ -47,48 +48,6 @@ import yaml
 REQUIRED_SAMPLE_FIELDS = ["id", "donor_id", "h5", "age", "group", "sex", "pool", "library"]
 VALID_GROUPS = {"Early_Stress", "Late_Stress", "Relaxed"}
 VALID_SEXES = {"M", "F", "unknown"}
-
-
-def load_config(path: Path) -> dict:
-    """Load YAML config. Returns a plain dict — no schema validation, fail-on-use.
-
-    Supports the dev.yaml indirection pattern:
-      - If the config has `samples_from: <other.yaml>`, samples are loaded from that file.
-      - If `subset.enabled: true` with `subset.sample_ids: [...]`, samples are filtered
-        to that ID list (order preserved from the source manifest).
-
-    Relative h5 paths are resolved relative to the current working directory.
-    """
-    with path.open() as f:
-        cfg = yaml.safe_load(f)
-
-    # Indirection: pull sample records from another YAML if requested
-    if "samples_from" in cfg:
-        src = Path(cfg["samples_from"])
-        with src.open() as f:
-            src_cfg = yaml.safe_load(f)
-        cfg["samples"] = src_cfg["samples"]
-
-    # Subset by explicit ID list (dev mode)
-    subset = cfg.get("subset", {})
-    if subset.get("enabled", False):
-        ids = set(subset.get("sample_ids", []))
-        if not ids:
-            sys.exit("ERROR: subset.enabled=true but subset.sample_ids is empty")
-        before = len(cfg["samples"])
-        cfg["samples"] = [s for s in cfg["samples"] if s["id"] in ids]
-        missing = ids - {s["id"] for s in cfg["samples"]}
-        if missing:
-            sys.exit(f"ERROR: subset.sample_ids not found in manifest: {sorted(missing)}")
-        print(f"  Subset: {len(cfg['samples'])}/{before} samples ({sorted(ids)})")
-
-    # Resolve h5 paths
-    cwd = Path.cwd()
-    for s in cfg["samples"]:
-        h5 = Path(s["h5"])
-        if not h5.is_absolute():
-            s["h5"] = str((cwd / h5).resolve())
-    return cfg
 
 
 def validate_manifest(samples: list[dict]) -> list[str]:

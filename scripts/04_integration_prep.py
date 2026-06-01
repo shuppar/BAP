@@ -38,30 +38,8 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
-import yaml
 
-
-# ----------------------------------------------------------------------------
-# Config loader (same as other phases)
-# ----------------------------------------------------------------------------
-
-def load_config(path: Path) -> dict:
-    with path.open() as f:
-        cfg = yaml.safe_load(f)
-    if "samples_from" in cfg:
-        with Path(cfg["samples_from"]).open() as f:
-            src = yaml.safe_load(f)
-        cfg["samples"] = src["samples"]
-    subset = cfg.get("subset", {})
-    if subset.get("enabled", False):
-        ids = set(subset.get("sample_ids", []))
-        before = len(cfg["samples"])
-        cfg["samples"] = [s for s in cfg["samples"] if s["id"] in ids]
-        missing = ids - {s["id"] for s in cfg["samples"]}
-        if missing:
-            sys.exit(f"ERROR: subset.sample_ids not in manifest: {sorted(missing)}")
-        print(f"  Subset: {len(cfg['samples'])}/{before} samples")
-    return cfg
+from _utils import load_config, add_lognorm, phase_paths
 
 
 # ----------------------------------------------------------------------------
@@ -153,12 +131,10 @@ def main():
 
     cfg = load_config(args.config)
     tissue = cfg["tissue"]
-    results_dir = Path(cfg["results_dir"])
-    in_dir = results_dir / "h5ad" / "04_doublets_removed"
-    out_dir = results_dir / "h5ad" / "05_integration_ready"
-    plot_dir = results_dir / "plots" / "04_integration_prep"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    plot_dir.mkdir(parents=True, exist_ok=True)
+    in_dir = phase_paths(cfg, "doublets")["h5ad"]
+    paths = phase_paths(cfg, "integration_prep")
+    out_dir = paths["h5ad"]
+    plot_dir = paths["plots"]
 
     # HVG count: tissue-specific default, YAML-overridable
     integ_cfg = cfg.get("integration", {})
@@ -197,12 +173,7 @@ def main():
     # --- 2. Normalize → layer (keep raw in .X for scVI) ---
     print(f"\n[2/4] Log-normalizing → .layers['lognorm'] (raw counts stay in .X)")
     combined.layers["counts"] = combined.X.copy()  # explicit alias of raw counts
-    # Do normalize/log1p on a temp copy so .X stays raw
-    tmp = combined.copy()
-    sc.pp.normalize_total(tmp, target_sum=1e4)
-    sc.pp.log1p(tmp)
-    combined.layers["lognorm"] = tmp.X
-    del tmp
+    add_lognorm(combined)
 
     # --- 3. HVG selection (seurat_v3 on raw counts, batch-aware by pool) ---
     print(f"\n[3/4] Selecting {n_hvg} HVGs (seurat_v3, batch_key=pool)...")
@@ -234,8 +205,7 @@ def main():
 
     # Summary table: per-sample cell counts in concatenated object
     summary = combined.obs.groupby("sample_id").size().reset_index(name="n_cells")
-    summary_path = results_dir / "tables" / "summary_integration_prep.csv"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path = paths["tables"] / "summary_integration_prep.csv"
     summary.to_csv(summary_path, index=False)
 
     print(f"\n  Summary:")

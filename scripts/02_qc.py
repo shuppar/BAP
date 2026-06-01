@@ -37,36 +37,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scanpy as sc
-import yaml
 
-
-# ----------------------------------------------------------------------------
-# Config loader (matches the one in 01_validate.py — kept in sync deliberately)
-# ----------------------------------------------------------------------------
-
-def load_config(path: Path) -> dict:
-    """Same load logic as 01_validate.py: handles samples_from + subset.sample_ids."""
-    with path.open() as f:
-        cfg = yaml.safe_load(f)
-    if "samples_from" in cfg:
-        with Path(cfg["samples_from"]).open() as f:
-            src = yaml.safe_load(f)
-        cfg["samples"] = src["samples"]
-    subset = cfg.get("subset", {})
-    if subset.get("enabled", False):
-        ids = set(subset.get("sample_ids", []))
-        before = len(cfg["samples"])
-        cfg["samples"] = [s for s in cfg["samples"] if s["id"] in ids]
-        missing = ids - {s["id"] for s in cfg["samples"]}
-        if missing:
-            sys.exit(f"ERROR: subset.sample_ids not in manifest: {sorted(missing)}")
-        print(f"  Subset: {len(cfg['samples'])}/{before} samples")
-    cwd = Path.cwd()
-    for s in cfg["samples"]:
-        h5 = Path(s["h5"])
-        if not h5.is_absolute():
-            s["h5"] = str((cwd / h5).resolve())
-    return cfg
+from _utils import load_config, phase_paths
 
 
 # ----------------------------------------------------------------------------
@@ -258,11 +230,9 @@ def process_sample(sample: dict, qc_cfg: dict, max_cells: int | None,
     print(f"  [{sid}] kept {n_post}/{n_pre} cells ({100*n_post/n_pre:.1f}%)")
 
     # Save filtered AnnData
-    out_h5ad.mkdir(parents=True, exist_ok=True)
     adata_post.write_h5ad(out_h5ad / f"{sid}.h5ad")
 
     # Plots
-    out_plot.mkdir(parents=True, exist_ok=True)
     plot_violin_prepost(adata_pre, adata_post, sid, out_plot / f"{sid}_violin_prepost.png")
     plot_scatter(adata_pre, thr, sid, out_plot / f"{sid}_scatter.png")
     plot_thresholds(adata_pre, thr, sid, out_plot / f"{sid}_thresholds.png")
@@ -339,8 +309,9 @@ def main():
     print(f"Samples: {len(samples)}")
 
     results_dir = Path(cfg["results_dir"])
-    out_h5ad = results_dir / "h5ad" / "03_qc_filtered"
-    out_plot = results_dir / "plots" / "02_qc"
+    paths = phase_paths(cfg, "qc")
+    out_h5ad = paths["h5ad"]
+    out_plot = paths["plots"]
 
     # Dev cell-cap (None for full runs)
     max_cells = cfg.get("subset", {}).get("max_cells_per_sample")
@@ -360,8 +331,7 @@ def main():
     # Only flags low outliers (high UMI = good problem, not garbage in).
     summary = flag_cohort_outliers(summary)
 
-    summary_path = results_dir / "tables" / "summary_qc.csv"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path = paths["tables"] / "summary_qc.csv"
     summary.to_csv(summary_path, index=False)
 
     n_flagged = int(summary["cohort_outlier"].sum())
