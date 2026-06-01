@@ -114,6 +114,26 @@ def run_celltypist(adata, model_source: str):
         print("  [skip] celltypist not installed. Run: uv add celltypist")
         return None
 
+    # Preflight: if model_source is a built-in name (not a local path), verify
+    # it exists in the registry BEFORE doing anything expensive. Catches typos
+    # and stale model names in ~2 seconds instead of erroring mid-run.
+    # Uses models_description() (documented) to list available models.
+    if not Path(model_source).is_file():
+        try:
+            desc = models.models_description()  # DataFrame; 'model' col has filenames
+            available = set(desc["model"].astype(str))
+            cand = model_source if model_source.endswith(".pkl") else model_source + ".pkl"
+            if cand not in available:
+                print(f"  [warn] '{model_source}' is not a built-in CellTypist model.")
+                print(f"         Available: {sorted(available)}")
+                print(f"         Skipping reference track for this subset.")
+                return None
+            model_source = cand
+        except Exception as e:
+            # Don't block the run if the registry check itself fails (offline,
+            # API change). Fall through and let download_models surface the error.
+            print(f"  [warn] Could not verify model name against registry: {e}")
+
     tmp = adata.copy()
     tmp.X = tmp.layers["lognorm"].copy()
 
@@ -131,6 +151,9 @@ def run_celltypist(adata, model_source: str):
 
     predictions = celltypist.annotate(tmp, model=model, majority_voting=True)
     result = predictions.predicted_labels.copy()
+    # conf_score proxy: max probability across cell types. CellTypist's own
+    # conf_score (via to_adata(insert_conf=True)) is computed slightly
+    # differently but tracks this closely; max-prob is fine for a QC overlay.
     result["conf_score"] = predictions.probability_matrix.max(axis=1).values
     return result
 
@@ -161,7 +184,7 @@ def score_marker_sets(adata, markers: dict) -> None:
         key = ("score_" + ct
                .replace(" ", "_").replace("/", "_")
                .replace("(", "").replace(")", ""))
-        sc.tl.score_genes(adata, present, score_name=key, use_raw=False)
+        sc.tl.score_genes(adata, present, score_name=key, layer="lognorm")
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +310,20 @@ def assign_provisional_celltype(adata, markers: dict) -> str:
             ct_names.append(ct)
 
     if not score_cols:
-        print("  [warn] No marker scores found — provisional labels unavailable.")
-        return "leiden"
+        # No marker scores at all means score_marker_sets found zero matching
+        # genes — almost always a gene-naming mismatch (var_names are Ensembl
+        # IDs, not symbols). Falling back to Leiden numbers would silently
+        # produce meaningless composition plots. Stop instead.
+        example_vars = list(adata.var_names[:5])
+        raise ValueError(
+            "No marker scores found — cannot assign provisional cell types.\n"
+            f"  adata.var_names look like: {example_vars}\n"
+            f"  Marker lists use mouse gene symbols (e.g. 'Cx3cr1', 'Slc17a7').\n"
+            f"  If var_names are Ensembl IDs, map them to symbols, or pass\n"
+            f"  symbol-based marker lists via the YAML annotation.markers block.\n"
+            f"  Refusing to fall back to Leiden cluster numbers, which would make\n"
+            f"  the composition plots meaningless."
+        )
 
     scores = adata.obs[score_cols].values          # n_cells × n_types
     best_idx = scores.argmax(axis=1)               # index of highest score per cell
@@ -484,24 +519,78 @@ def main():
 
     # --- Track 1: CellTypist ---
     print(f"\n[2/4] Track 1: CellTypist reference annotation...")
-    model_source = cfg.get("annotation", {}).get("celltypist_model")
-    if not model_source:
-        print(f"  No celltypist_model in config — skipping.")
+    annot_cfg = cfg.get("annotation", {})
+
+    # Per-age model selection: annotation.celltypist_models.<age> in YAML.
+    # Falls back to annotation.celltypist_model (single model) for placenta
+    # or when all ages share one model.
+    #
+    # Brain age → recommended model:
+    #   P1  → Developing_Mouse_Brain  (developing brain, Di Bella-era)
+    #   4W  → Mouse_Brain_Atlas       (Allen Brain Cell Atlas, Yao 2023)
+    #   3mo → Mouse_Brain_Atlas
+    #
+    # Placenta: no built-in CellTypist model — set celltypist_model to a
+    # local .pkl path trained on Marsh & Blelloch 2020 or similar.
+    per_age_models = annot_cfg.get("celltypist_models", {})
+    single_model   = annot_cfg.get("celltypist_model")
+
+    if not per_age_models and not single_model:
+        print(f"  No CellTypist model configured — skipping reference track.")
         print(f"  To enable, add to YAML:")
         print(f"    annotation:")
+        print(f"      celltypist_models:")
         if tissue == "brain":
-            print(f"      celltypist_model: Developing_Mouse_Brain")
+            print(f"        P1:  Developing_Mouse_Brain")
+            print(f"        4W:  Mouse_Brain_Atlas")
+            print(f"        3mo: Mouse_Brain_Atlas")
         else:
-            print(f"      celltypist_model: /path/to/placenta_model.pkl")
+            print(f"        E12.5: /path/to/placenta_model.pkl")
+            print(f"        E18.5: /path/to/placenta_model.pkl")
     else:
-        ct_result = run_celltypist(adata, model_source)
-        if ct_result is not None:
-            adata.obs["celltypist_majority"] = ct_result["majority_voting"].values
-            adata.obs["celltypist_predicted"] = ct_result["predicted_labels"].values
-            adata.obs["celltypist_conf_score"] = ct_result["conf_score"].values
-            ct_result.index = adata.obs_names
-            ct_result.to_csv(table_dir / "celltypist_predictions.csv")
-            print(f"  {adata.obs['celltypist_majority'].nunique()} cell types predicted")
+        # Run CellTypist per age group so each subset gets the right model.
+        # If per_age_models is empty, use single_model for all cells.
+        ages_in_data = adata.obs["age"].unique().tolist()
+        all_predictions = []
+
+        for age in ages_in_data:
+            model_source = per_age_models.get(age, single_model)
+            if not model_source:
+                print(f"  [skip] No CellTypist model for age={age} — "
+                      f"these cells will use provisional marker-based labels.")
+                continue
+            print(f"  age={age} → model: {model_source}")
+            age_mask = adata.obs["age"] == age
+            adata_age = adata[age_mask].copy()
+            ct_result = run_celltypist(adata_age, model_source)
+            if ct_result is not None:
+                ct_result.index = adata_age.obs_names
+                all_predictions.append(ct_result)
+
+        if all_predictions:
+            combined = pd.concat(all_predictions)
+            # Reindex to full adata order. Ages without a model (or where
+            # CellTypist failed) will be NaN here.
+            combined = combined.reindex(adata.obs_names)
+            n_labeled = combined["majority_voting"].notna().sum()
+            n_total = len(adata)
+            if n_labeled < n_total:
+                # Partial coverage: don't leave NaN labels that show up as a
+                # "nan" category in plots. Mark them explicitly so it's visible
+                # that those cells were not CellTypist-annotated.
+                print(f"  [info] CellTypist labeled {n_labeled:,}/{n_total:,} cells. "
+                      f"Unlabeled ages marked 'no_model'.")
+                combined["majority_voting"]  = combined["majority_voting"].fillna("no_model")
+                combined["predicted_labels"] = combined["predicted_labels"].fillna("no_model")
+            adata.obs["celltypist_majority"]  = combined["majority_voting"].values
+            adata.obs["celltypist_predicted"] = combined["predicted_labels"].values
+            adata.obs["celltypist_conf_score"] = combined["conf_score"].values
+            combined.to_csv(table_dir / "celltypist_predictions.csv")
+            n_types = adata.obs["celltypist_majority"].nunique()
+            print(f"  CellTypist complete: {n_types} distinct cell types predicted")
+            dist = adata.obs["celltypist_majority"].value_counts().head(10)
+            for ct, n in dist.items():
+                print(f"    {ct}: {n:,} ({100*n/len(adata):.1f}%)")
 
     # --- Track 2: Marker-based ---
     print(f"\n[3/4] Track 2: marker genes + scoring (on lognorm)...")

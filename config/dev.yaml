@@ -40,5 +40,19 @@ random_seed: 42
 # then filters to subset.sample_ids
 samples_from: config/brain.yaml
 
+# CellTypist annotation models (per age).
+# VERIFIED against CellTypist v1.7.1 model registry (12 built-in models):
+#   - Developing_Mouse_Brain.pkl is the ONLY built-in mouse brain model.
+#   - There is NO built-in adult mouse brain model in CellTypist.
+# For 4W/3mo (adult) brain, options are:
+#   (a) use Developing_Mouse_Brain as a rough first pass (labels approximate), or
+#   (b) train a custom CellTypist model on the Allen Brain Cell Atlas (Yao 2023)
+#       and point at the local .pkl, or
+#   (c) skip CellTypist for adult ages and rely on marker-based annotation.
+# Ages with no entry below fall back to marker-based provisional labels.
+# Models download automatically on first use.
 annotation:
-  celltypist_model: Developing_Mouse_Brain
+  celltypist_models:
+    P1: Developing_Mouse_Brain.pkl
+    # 4W:  <custom Allen BCA model path>.pkl   # no built-in adult model
+    # 3mo: <custom Allen BCA model path>.pkl

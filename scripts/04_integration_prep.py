@@ -90,22 +90,25 @@ def build_exclusion_mask(var_names: pd.Index, tissue: str) -> pd.Series:
 
 S_GENES_MOUSE = [
     "Mcm5", "Pcna", "Tyms", "Fen1", "Mcm2", "Mcm4", "Rrm1", "Ung", "Gins2",
-    "Mcm6", "Cdca7", "Dtl", "Prim1", "Uhrf1", "Mlf1ip", "Hells", "Rfc2",
+    "Mcm6", "Cdca7", "Dtl", "Prim1", "Uhrf1", "Mlf1ip", "Cenpu", "Hells", "Rfc2",
     "Rpa2", "Nasp", "Rad51ap1", "Gmnn", "Wdc", "Slbp", "Ccne2", "Ubr7",
     "Pold3", "Msh2", "Atad2", "Rad51", "Rrm2", "Cdc45", "Cdc6", "Exo1",
     "Tipin", "Dscc1", "Blm", "Casp8ap2", "Usp1", "Clspn", "Pola1", "Chaf1b",
     "Brip1", "E2f8",
-]
+]   # Mlf1ip/Cenpu: same gene, old/new MGI symbol — both kept so the list
+    # survives either annotation version (score_genes_cell_cycle ignores misses).
 
 G2M_GENES_MOUSE = [
     "Hmgb2", "Cdk1", "Nusap1", "Ube2c", "Birc5", "Tpx2", "Top2a", "Ndc80",
-    "Cks2", "Nuf2", "Cks1b", "Mki67", "Tmpo", "Cenpf", "Tacc3", "Fam64a",
-    "Smc4", "Ccnb2", "Ckap2l", "Ckap2", "Aurkb", "Bub1", "Kif11", "Anp32e",
-    "Tubb4b", "Gtse1", "Kif20b", "Hjurp", "Cdca3", "Hn1", "Cdc20", "Ttk",
-    "Cdc25c", "Kif2c", "Rangap1", "Ncapd2", "Dlgap5", "Cdca2", "Cdca8",
-    "Ect2", "Kif23", "Hmmr", "Aurka", "Psrc1", "Anln", "Lbr", "Ckap5",
-    "Cenpe", "Ctcf", "Nek2", "G2e3", "Gas2l3", "Cbx5", "Cenpa",
-]
+    "Cks2", "Nuf2", "Cks1b", "Mki67", "Tmpo", "Cenpf", "Tacc3",
+    "Fam64a", "Pimreg", "Smc4", "Ccnb2", "Ckap2l", "Ckap2", "Aurkb", "Bub1",
+    "Kif11", "Anp32e", "Tubb4b", "Gtse1", "Kif20b", "Hjurp", "Cdca3",
+    "Hn1", "Jpt1", "Cdc20", "Ttk", "Cdc25c", "Kif2c", "Rangap1", "Ncapd2",
+    "Dlgap5", "Cdca2", "Cdca8", "Ect2", "Kif23", "Hmmr", "Aurka", "Psrc1",
+    "Anln", "Lbr", "Ckap5", "Cenpe", "Ctcf", "Nek2", "G2e3", "Gas2l3",
+    "Cbx5", "Cenpa",
+]   # Fam64a/Pimreg and Hn1/Jpt1: old/new MGI symbols for the same genes —
+    # both kept so the list survives either annotation version.
 
 
 def score_cell_cycle(adata) -> None:
@@ -127,9 +130,23 @@ def score_cell_cycle(adata) -> None:
     print(f"  S-phase genes found: {len(s_present)}/{len(S_GENES_MOUSE)}")
     print(f"  G2M genes found:     {len(g2m_present)}/{len(G2M_GENES_MOUSE)}")
 
-    if len(s_present) < 5 or len(g2m_present) < 5:
-        print("  [warn] Too few cell cycle genes found — scores will be unreliable.")
-        print("         Check that gene names match your annotation (mouse title-case).")
+    # HARD FAIL, not a warning: if too few genes match, the scores would be
+    # garbage but would still look like valid numbers downstream. The most
+    # likely cause is a gene-naming mismatch (e.g. var_names are Ensembl IDs,
+    # not mouse symbols). Stop here rather than produce plausible-but-wrong
+    # cell cycle assignments that silently corrupt Phase 8 proliferation analysis.
+    MIN_GENES = 10
+    if len(s_present) < MIN_GENES or len(g2m_present) < MIN_GENES:
+        example_vars = list(tmp.var_names[:5])
+        raise ValueError(
+            f"Too few cell cycle genes matched (S={len(s_present)}, "
+            f"G2M={len(g2m_present)}; need >={MIN_GENES} each).\n"
+            f"  adata.var_names look like: {example_vars}\n"
+            f"  Expected mouse gene symbols (e.g. 'Mcm5', 'Top2a').\n"
+            f"  If var_names are Ensembl IDs, map them to symbols before this phase,\n"
+            f"  or pass symbol-based gene lists. Refusing to compute unreliable\n"
+            f"  cell cycle scores that would silently corrupt downstream analysis."
+        )
 
     sc.tl.score_genes_cell_cycle(tmp, s_genes=s_present, g2m_genes=g2m_present)
 
