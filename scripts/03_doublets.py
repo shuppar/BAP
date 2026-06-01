@@ -78,10 +78,16 @@ def run_scdblfinder_for_pool(pool_id: str, adatas: dict, rscript_path: Path,
         samp_path = td / "samples.tsv"
         out_path = td / "doublets.tsv"
 
-        # Transpose to genes x cells; ensure sparse + integer-friendly
+        # Transpose to genes x cells. scDblFinder works on counts; if upstream
+        # CellBender produced non-integer corrected counts, round to nearest int
+        # (scDblFinder expects count-like data). Raw Cell Ranger counts are
+        # already integer so this is a no-op on the laptop dev path.
         X = combined.X
         if not sp.issparse(X):
             X = sp.csr_matrix(X)
+        if X.dtype.kind == "f":
+            X = X.copy()
+            X.data = np.rint(X.data)
         X_T = X.T.tocoo()  # genes x cells, COO for MM writer
         sio.mmwrite(str(mtx_path), X_T, field="integer")
 

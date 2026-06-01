@@ -2,44 +2,35 @@
 """
 05_integration.py — Phase 5: scVI integration.
 
-Key changes from original:
-  - Removed categorical_covariate_keys=[age, group, sex]. Those are nuisance
-    removers in scVI — including them strips biological signal from the latent.
-    batch_key=pool handles the technical correction; age/group/sex stay as
-    real signal in the latent space.
-  - Cell cycle: cc_difference is available in adata.obs from Phase 4. It is
-    NOT conditioned on by default (proliferation is real biology at P1 and
-    could be a stress effect). To enable: set scvi.condition_cell_cycle: true
-    in the YAML — the script will add cc_difference to continuous_covariate_keys.
-  - Post-integration UMAPs now include phase (cell cycle) as a coloring key,
-    so you can immediately see whether cycle is driving any cluster structure
-    before deciding whether to condition on it.
+Trains scVI on the concatenated post-doublet object from Phase 4, producing a
+batch-corrected 30-dim latent embedding in adata.obsm["X_scVI"]. Computes neighbor
+graphs + UMAPs both pre-integration (PCA on lognorm) and post-integration (on
+the scVI latent) so you can see whether pool effects were corrected.
 
-scVI setup:
-  - batch_key = pool                      (technical batch — corrected)
-  - continuous_covariate_keys = [pct_counts_mt]  (+ cc_difference if opted in)
-  - No categorical covariates             (biology stays in latent)
+Key choices (per project doc §3, §5 Phase 5, §11):
+  - batch_key=pool                 — the multiplexing/library structure
+  - categorical_covariates=        — age, group, sex (preserved as biology)
+  - continuous_covariates=         — pct_counts_mt
+  - HVG subset for training        — uses adata.var["use_for_scvi"] from Phase 4
+  - BF16 mixed precision           — Ada GPU; auto-falls-back to CPU
+  - n_layers=2, n_latent=30, max_epochs=400, batch_size=1024, early stopping
 
 Usage:
   uv run python scripts/05_integration.py --config config/dev.yaml
   uv run python scripts/05_integration.py --config config/brain.yaml
 
 Inputs:
-  {results_dir}/h5ad/05_integration_ready/all_samples.h5ad  (from Phase 4)
+  Concatenated h5ad from Phase 4 at
+    {results_dir}/h5ad/05_integration_ready/all_samples.h5ad
 
 Outputs:
-  {results_dir}/h5ad/06_integrated/all_samples.h5ad
-  {results_dir}/h5ad/06_integrated/scvi_model/
-  {results_dir}/plots/05_integration/
-    - umap_pre_integration.png   : PCA-based UMAP before correction
-    - umap_post_integration.png  : scVI latent UMAP after correction
-    - umap_post_phase.png        : post-integration UMAP colored by cell cycle phase
-    - scvi_loss_curve.png
-  {results_dir}/tables/scvi_training_history.csv
+  {results_dir}/h5ad/06_integrated/all_samples.h5ad   — integrated AnnData
+  {results_dir}/h5ad/06_integrated/scvi_model/        — trained scVI model dir
+  {results_dir}/plots/05_integration/*.png            — pre/post UMAPs, loss
+  {results_dir}/tables/scvi_training_history.csv      — per-epoch loss
 """
 
 import argparse
-import shutil
 import sys
 from pathlib import Path
 
@@ -56,9 +47,13 @@ from _utils import load_config, phase_paths, select_accelerator
 # UMAP helpers
 # ----------------------------------------------------------------------------
 
-def compute_pre_integration_umap(adata) -> None:
-    """PCA on lognorm → neighbors → UMAP. Baseline before integration."""
+def compute_pre_integration_umap(adata):
+    """PCA on lognorm + neighbors + UMAP. Used as 'before integration' baseline.
+    Writes to adata.obsm['X_pca_pre'] and adata.obsm['X_umap_pre']."""
     print("  Computing pre-integration UMAP (PCA on lognorm)...")
+    # Subset to HVGs that survive exclusion (same gene set scVI will use), then
+    # PCA on the log-normalized layer. Operate on a copy so we don't mutate
+    # the input AnnData's main slots.
     hvg = adata.var["use_for_scvi"].values
     tmp = adata[:, hvg].copy()
     tmp.X = tmp.layers["lognorm"].copy()
@@ -70,45 +65,42 @@ def compute_pre_integration_umap(adata) -> None:
     adata.obsm["X_umap_pre"] = tmp.obsm["X_umap"]
 
 
-def compute_post_integration_umap(adata) -> None:
-    """Neighbors → UMAP on scVI latent."""
+def compute_post_integration_umap(adata):
+    """Neighbors + UMAP on scVI latent. Writes to adata.obsm['X_umap']."""
     print("  Computing post-integration UMAP (on scVI latent)...")
     sc.pp.neighbors(adata, use_rep="X_scVI")
     sc.tl.umap(adata)
 
 
-def plot_umap_panel(adata, basis: str, color_keys: list[str],
-                    out: Path, title: str) -> None:
-    """Multi-panel UMAP. basis is 'X_umap_pre' or 'X_umap'."""
-    # Filter to keys that actually exist in obs
-    color_keys = [k for k in color_keys if k in adata.obs.columns or k in adata.var_names]
-    if not color_keys:
-        return
+def plot_umap_panel(adata, basis: str, color_keys: list[str], out: Path, title: str):
+    """4-panel UMAP colored by pool, age, group, sex. basis is 'X_umap_pre' or 'X_umap'."""
     n = len(color_keys)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 4.5))
     if n == 1:
         axes = [axes]
-    saved_umap = adata.obsm.get("X_umap")
+    # scanpy's pl.umap reads obsm["X_umap"] by default — swap if needed
     if basis != "X_umap":
-        adata.obsm["X_umap"] = adata.obsm[basis].copy()
+        adata.obsm["X_umap"], saved = adata.obsm[basis].copy(), adata.obsm.get("X_umap")
     try:
         for ax, key in zip(axes, color_keys):
             sc.pl.umap(adata, color=key, ax=ax, show=False, frameon=False,
                        legend_fontsize=7, size=8)
             ax.set_title(f"{title}: {key}")
     finally:
-        if basis != "X_umap" and saved_umap is not None:
-            adata.obsm["X_umap"] = saved_umap
+        if basis != "X_umap" and saved is not None:
+            adata.obsm["X_umap"] = saved
     fig.tight_layout()
     fig.savefig(out, dpi=140, bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_loss_curve(history: pd.DataFrame, out: Path) -> None:
+def plot_loss_curve(history: pd.DataFrame, out: Path):
+    """Loss curves from scVI's training history."""
     fig, ax = plt.subplots(figsize=(7, 4))
+    # scVI history columns vary slightly by version; pick what's present
     candidates = [c for c in ("train_loss_epoch", "validation_loss",
-                               "elbo_train", "elbo_validation",
-                               "reconstruction_loss_train", "reconstruction_loss_validation")
+                              "elbo_train", "elbo_validation",
+                              "reconstruction_loss_train", "reconstruction_loss_validation")
                   if c in history.columns]
     for c in candidates:
         ax.plot(history.index, history[c], label=c, lw=1.2)
@@ -129,7 +121,7 @@ def plot_loss_curve(history: pd.DataFrame, out: Path) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Phase 5: scVI integration")
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--cpu", action="store_true", help="Force CPU")
+    parser.add_argument("--cpu", action="store_true", help="Force CPU (override GPU detection)")
     args = parser.parse_args()
 
     print(f"\n=== Phase 5: scVI integration ===")
@@ -154,59 +146,36 @@ def main():
     n_hvg = int(adata.var["use_for_scvi"].sum())
     print(f"  HVGs for scVI: {n_hvg}")
 
-    # Check Phase 4 cell cycle scores made it through
-    has_cc = "S_score" in adata.obs.columns
-    if not has_cc:
-        print("  [warn] Cell cycle scores not found in adata.obs.")
-        print("         Re-run Phase 4 to get S_score/G2M_score/phase/cc_difference.")
-
-    # --- scVI config ---
+    # scVI training config — pull from YAML if present, else use doc §6 defaults
     scvi_cfg = cfg.get("scvi", {})
-    n_latent    = int(scvi_cfg.get("n_latent", 30))
-    n_layers    = int(scvi_cfg.get("n_layers", 2))
-    max_epochs  = int(scvi_cfg.get("max_epochs", 400))
-    batch_size  = int(scvi_cfg.get("batch_size", 1024))
-    es_patience = int(scvi_cfg.get("early_stopping_patience", 30))
-    seed        = int(cfg.get("random_seed", 42))
-
-    # Cell cycle conditioning: off by default (proliferation is real biology
-    # at P1 and could itself be a stress effect). Enable in YAML if cycling
-    # cells create unwanted cluster structure in the phase UMAP below.
-    condition_cc = bool(scvi_cfg.get("condition_cell_cycle", False))
-    continuous_covariates = ["pct_counts_mt"]
-    if condition_cc and has_cc:
-        continuous_covariates.append("cc_difference")
-        print(f"  Cell cycle conditioning: ON (cc_difference added to continuous covariates)")
-    else:
-        print(f"  Cell cycle conditioning: OFF (default — check phase UMAP after training)")
+    n_latent     = int(scvi_cfg.get("n_latent", 30))
+    n_layers     = int(scvi_cfg.get("n_layers", 2))
+    max_epochs   = int(scvi_cfg.get("max_epochs", 400))
+    batch_size   = int(scvi_cfg.get("batch_size", 1024))
+    es_patience  = int(scvi_cfg.get("early_stopping_patience", 30))
+    seed         = int(cfg.get("random_seed", 42))
 
     accelerator, precision = select_accelerator(force_cpu=args.cpu)
+    # For dev runs on tiny data, fewer epochs is enough and avoids overfitting
     if adata.n_obs < 5000:
         max_epochs = min(max_epochs, 50)
         print(f"  Small dataset (n={adata.n_obs}) — capping max_epochs at {max_epochs}")
 
-    print(f"\n[2/5] scVI setup")
-    print(f"  batch_key          = pool  (technical batch correction)")
-    print(f"  categorical_covariates = none  (biology stays in latent)")
-    print(f"  continuous_covariates  = {continuous_covariates}")
-    print(f"  accelerator={accelerator}, precision={precision}, seed={seed}")
-
+    print(f"\n[2/5] scVI setup (accelerator={accelerator}, precision={precision}, seed={seed})")
     scvi.settings.seed = seed
-    adata_hvg = adata[:, adata.var["use_for_scvi"]].copy()
 
-    # Check required obs columns exist
-    missing_obs = [c for c in continuous_covariates if c not in adata_hvg.obs.columns]
-    if missing_obs:
-        print(f"  [warn] Missing obs columns for continuous covariates: {missing_obs}")
-        continuous_covariates = [c for c in continuous_covariates
-                                  if c in adata_hvg.obs.columns]
+    # Subset to the HVG set scVI should learn on. Raw counts are in .X already.
+    adata_hvg = adata[:, adata.var["use_for_scvi"]].copy()
 
     scvi.model.SCVI.setup_anndata(
         adata_hvg,
         batch_key="pool",
-        continuous_covariate_keys=continuous_covariates,
+        categorical_covariate_keys=["age", "group", "sex"],
+        continuous_covariate_keys=["pct_counts_mt"],
     )
-    model = scvi.model.SCVI(adata_hvg, n_layers=n_layers, n_latent=n_latent)
+    model = scvi.model.SCVI(
+        adata_hvg, n_layers=n_layers, n_latent=n_latent,
+    )
 
     print(f"\n[3/5] Training scVI (max_epochs={max_epochs}, batch_size={batch_size}, "
           f"early_stopping_patience={es_patience})")
@@ -220,52 +189,63 @@ def main():
         precision=precision,
     )
 
+    # Save trained model + training history
     if model_dir.exists():
+        # SCVI.save with overwrite=True requires the model_dir to exist already
+        # or it'll handle creation; we just need it to not error on stale dir
+        import shutil
         shutil.rmtree(model_dir)
     model.save(str(model_dir), overwrite=True)
-    history = pd.concat({k: pd.DataFrame(v) for k, v in model.history.items()}, axis=1)
-    history.columns = history.columns.droplevel(1)
+    # model.history is a dict {metric_name: DataFrame indexed by epoch}. Each
+    # DataFrame typically has one column (the metric). Join them on the epoch
+    # index. Using join="outer" tolerates ragged histories (e.g. validation
+    # metrics logged on a different epoch cadence than train metrics).
+    hist_frames = []
+    for name, df in model.history.items():
+        df = df.copy()
+        # Normalize to a single column named after the metric
+        if df.shape[1] == 1:
+            df.columns = [name]
+        hist_frames.append(df)
+    history = pd.concat(hist_frames, axis=1, join="outer").sort_index()
     history.to_csv(paths["tables"] / "scvi_training_history.csv", index=True)
     plot_loss_curve(history, plot_dir / "scvi_loss_curve.png")
-    print(f"  Trained: actual epochs = {len(history)}")
+    print(f"  Trained: {len(history)} epochs logged")
 
+    # Write latent back onto the FULL adata (not just HVG subset) so downstream
+    # phases can use the full gene set for marker analysis etc.
     print(f"\n[4/5] Extracting latent + computing UMAPs...")
     adata.obsm["X_scVI"] = model.get_latent_representation()
 
     compute_pre_integration_umap(adata)
     compute_post_integration_umap(adata)
 
-    # Pre-integration: pool, age, group, sex
-    plot_umap_panel(adata, "X_umap_pre", ["pool", "age", "group", "sex"],
+    color_keys = ["pool", "age", "group", "sex"]
+    plot_umap_panel(adata, "X_umap_pre", color_keys,
                     plot_dir / "umap_pre_integration.png", title="pre")
-
-    # Post-integration: same biological keys
-    plot_umap_panel(adata, "X_umap", ["pool", "age", "group", "sex"],
+    plot_umap_panel(adata, "X_umap", color_keys,
                     plot_dir / "umap_post_integration.png", title="post")
 
-    # Cell cycle phase UMAP — key diagnostic: does phase drive clusters?
-    # If yes and it looks like a technical artifact, enable condition_cell_cycle in YAML.
-    if has_cc:
-        plot_umap_panel(adata, "X_umap", ["phase", "S_score", "G2M_score"],
-                        plot_dir / "umap_post_phase.png", title="cell cycle")
-
     print(f"\n[5/5] Writing integrated h5ad...")
+    # Drop lognorm layer (cheap to recompute from raw counts when needed —
+    # see project doc §3 on not carrying redundant layers at scale).
+    # `counts` layer is also redundant with .X; drop too.
     for layer in ("lognorm", "counts"):
         if layer in adata.layers:
             del adata.layers[layer]
     out_path = out_dir / "all_samples.h5ad"
     adata.write_h5ad(out_path)
-
     print(f"  Wrote {out_path}")
     print(f"  Model: {model_dir}")
     print(f"  Plots: {plot_dir}")
-    print(f"\n✓ Phase 5 complete.")
-    print(f"\nKey diagnostics:")
-    print(f"  umap_pre_integration.png  → pool should cluster (batch effect visible)")
-    print(f"  umap_post_integration.png → pool should mix; age/group/sex stay separated")
-    print(f"  umap_post_phase.png       → does cell cycle phase drive any clusters?")
-    print(f"    If yes: set scvi.condition_cell_cycle: true in YAML and re-run Phase 5.")
-    print(f"\nNext step: Phase 6 clustering\n")
+    print(f"\n✓ Phase 5 complete.\n")
+    print(f"Inspect umap_pre_integration.png vs umap_post_integration.png:")
+    print(f"  - pool: should go from clustered (pre) to mixed (post)")
+    print(f"  - age/group/sex: biology should stay clustered both pre and post")
+    print(f"\nNote: lognorm layer dropped from saved h5ad. To re-add in a notebook:")
+    print(f"  adata.layers['lognorm'] = adata.X.copy()")
+    print(f"  sc.pp.normalize_total(adata, target_sum=1e4, layer='lognorm')")
+    print(f"  sc.pp.log1p(adata, layer='lognorm')\n")
 
 
 if __name__ == "__main__":

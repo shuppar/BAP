@@ -413,6 +413,25 @@ wheels = [
 ]
 
 [[package]]
+name = "celltypist"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "leidenalg" },
+    { name = "numpy" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "requests" },
+    { name = "scanpy" },
+    { name = "scikit-learn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d9/4d/947ca18ecfd80fb2d7ce18d6f6bb2c23f5a45e09a6e7579a7fa69c782315/celltypist-1.7.1.tar.gz", hash = "sha256:6ffaebc0f296d24785ffce25951ad70a00553bd8d06aff2f55f98251b739ce00", size = 6676736, upload-time = "2025-06-25T21:14:58.406Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/92/6c/12f14d20ccd49bfe8709cebd1b77a244f019e44a8702d3962021b618812e/celltypist-1.7.1-py3-none-any.whl", hash = "sha256:3953f96a4476ed1dd2807446d97d3945e8905bbdac6bfef0d20b84a9a00d1101", size = 7331762, upload-time = "2025-06-25T21:14:56.669Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.5.20"
 source = { registry = "https://pypi.org/simple" }
@@ -3582,6 +3601,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anndata" },
+    { name = "celltypist" },
     { name = "click" },
     { name = "decoupler" },
     { name = "gitpython" },
@@ -3636,6 +3656,7 @@ trajectory = [
 requires-dist = [
     { name = "anndata", specifier = ">=0.11" },
     { name = "cellrank", marker = "extra == 'trajectory'", specifier = ">=2.0,<3.0" },
+    { name = "celltypist", specifier = ">=1.7.1" },
     { name = "click", specifier = ">=8.1" },
     { name = "decoupler", specifier = ">=2.0" },
     { name = "gitpython", specifier = ">=3.1" },

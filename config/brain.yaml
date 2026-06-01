@@ -323,3 +323,5 @@ sex_markers:
   x_linked:
   - Xist
 random_seed: 42
+annotation:
+  celltypist_model: Developing_Mouse_Brains

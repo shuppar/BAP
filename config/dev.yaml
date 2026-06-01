@@ -39,3 +39,6 @@ random_seed: 42
 # Point at the full sample manifest — the script reads samples from brain.yaml,
 # then filters to subset.sample_ids
 samples_from: config/brain.yaml
+
+annotation:
+  celltypist_model: Developing_Mouse_Brain
