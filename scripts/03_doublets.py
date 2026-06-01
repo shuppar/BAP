@@ -155,14 +155,17 @@ def plot_doublet_score_hist(scores: pd.Series, classes: pd.Series,
 
 
 def plot_rate_per_sample(summary: pd.DataFrame, out: Path) -> None:
-    """Bar chart of doublet rate per sample."""
-    fig, ax = plt.subplots(figsize=(max(6, 0.4 * len(summary)), 4))
+    """Bar chart of doublet rate per sample. Width and font scale with n_samples."""
+    n = len(summary)
+    width = max(6, 0.35 * n)
+    fontsize = 9 if n <= 12 else (8 if n <= 24 else 7)
+    fig, ax = plt.subplots(figsize=(width, 4.5))
     ax.bar(summary["sample_id"], summary["pct_doublet"], color="salmon", edgecolor="k")
     ax.set_ylabel("% doublets")
-    ax.set_title("Doublet rate per sample")
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    ax.set_title(f"Doublet rate per sample (n={n})")
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=fontsize)
     fig.tight_layout()
-    fig.savefig(out, dpi=120)
+    fig.savefig(out, dpi=140)
     plt.close(fig)
 
 

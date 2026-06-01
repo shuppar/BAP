@@ -106,15 +106,19 @@ def plot_hvg_dispersion(adata, out: Path) -> None:
 
 
 def plot_cells_per_sample(adata, out: Path) -> None:
-    """Bar of cells per sample in the concatenated object — sanity check."""
+    """Bar of cells per sample in the concatenated object — sanity check.
+    Width and font scale with n_samples (handles n=23 placenta, n=34 brain)."""
     counts = adata.obs["sample_id"].value_counts().sort_index()
-    fig, ax = plt.subplots(figsize=(max(6, 0.4 * len(counts)), 4))
+    n = len(counts)
+    width = max(6, 0.35 * n)
+    fontsize = 9 if n <= 12 else (8 if n <= 24 else 7)
+    fig, ax = plt.subplots(figsize=(width, 4.5))
     ax.bar(counts.index, counts.values, color="steelblue", edgecolor="k")
     ax.set_ylabel("n cells")
-    ax.set_title(f"Cells per sample after concat (total: {adata.n_obs:,})")
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    ax.set_title(f"Cells per sample after concat (n={n} samples, total: {adata.n_obs:,})")
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=fontsize)
     fig.tight_layout()
-    fig.savefig(out, dpi=120)
+    fig.savefig(out, dpi=140)
     plt.close(fig)
 
 

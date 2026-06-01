@@ -204,12 +204,14 @@ def plot_balance(df: pd.DataFrame, out: Path) -> None:
 
 
 def plot_library_confound(df: pd.DataFrame, out: Path) -> None:
-    """Heatmap of library × (group, sex). Warn if any row has zeros."""
-    fig, ax = plt.subplots(figsize=(8, max(3, 0.5 * len(df))))
+    """Heatmap of library × (group, sex). Warn if any row has zeros.
+    Scales with number of (group, sex) columns and libraries."""
+    n_rows, n_cols = df.shape
+    fig, ax = plt.subplots(figsize=(max(6, 0.8 * n_cols), max(3, 0.5 * n_rows)))
     sns.heatmap(df, annot=True, fmt="d", cmap="Reds", ax=ax)
     ax.set_title("Library confound check (samples per library × group × sex)")
     fig.tight_layout()
-    fig.savefig(out, dpi=120)
+    fig.savefig(out, dpi=140)
     plt.close(fig)
 
 

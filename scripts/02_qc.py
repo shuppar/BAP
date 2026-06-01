@@ -279,6 +279,49 @@ def process_sample(sample: dict, qc_cfg: dict, max_cells: int | None,
 
 
 # ----------------------------------------------------------------------------
+# Cohort-level outlier flag (post-processing across all samples)
+# ----------------------------------------------------------------------------
+
+def flag_cohort_outliers(summary: pd.DataFrame, n_mads: float = 3.0,
+                         min_cohort_size: int = 5) -> pd.DataFrame:
+    """Add columns `cohort_outlier` (bool) and `cohort_outlier_reason` (str).
+
+    For each sample, check if post-filter median UMI or median gene count is
+    >n_mads below the COHORT median (computed across all samples in this run).
+    Only flags low outliers — high values are not concerning.
+
+    Skipped if cohort_size < min_cohort_size (need enough samples for a
+    meaningful cohort MAD). In that case, all flags are False.
+    """
+    summary = summary.copy()
+    summary["cohort_outlier"] = False
+    summary["cohort_outlier_reason"] = ""
+
+    if len(summary) < min_cohort_size:
+        return summary
+
+    def low_mad_threshold(x):
+        med = np.median(x)
+        mad = np.median(np.abs(x - med))
+        return med - n_mads * mad
+
+    umi_thr = low_mad_threshold(summary["median_umi_post"])
+    gene_thr = low_mad_threshold(summary["median_genes_post"])
+
+    reasons = []
+    for _, r in summary.iterrows():
+        parts = []
+        if r["median_umi_post"] < umi_thr:
+            parts.append(f"median_umi={r['median_umi_post']:.0f} < cohort threshold {umi_thr:.0f}")
+        if r["median_genes_post"] < gene_thr:
+            parts.append(f"median_genes={r['median_genes_post']:.0f} < cohort threshold {gene_thr:.0f}")
+        reasons.append("; ".join(parts))
+    summary["cohort_outlier_reason"] = reasons
+    summary["cohort_outlier"] = summary["cohort_outlier_reason"].str.len() > 0
+    return summary
+
+
+# ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
 
@@ -310,9 +353,26 @@ def main():
         rows.append(row)
 
     summary = pd.DataFrame(rows)
+
+    # Cohort-outlier flag: catch failed-prep samples whose per-sample MAD made
+    # their own bounds permissive. Compares each sample's post-filter median UMI
+    # and gene count to the cohort median ± 3 cohort-MADs.
+    # Only flags low outliers (high UMI = good problem, not garbage in).
+    summary = flag_cohort_outliers(summary)
+
     summary_path = results_dir / "tables" / "summary_qc.csv"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(summary_path, index=False)
+
+    n_flagged = int(summary["cohort_outlier"].sum())
+    if n_flagged:
+        flagged = summary[summary["cohort_outlier"]]
+        print(f"\n  ⚠ {n_flagged} cohort outlier(s) — sample median UMI or gene count")
+        print(f"     is >3 MADs below the cohort median (possible failed prep):")
+        print(flagged[["sample_id", "median_umi_post", "median_genes_post",
+                        "cohort_outlier_reason"]].to_string(index=False))
+        print(f"     These samples still passed per-sample QC; flagged in summary_qc.csv.")
+        print(f"     Decide whether to drop them or keep with caveat.")
 
     print(f"\n  Summary:")
     print(summary[["sample_id", "n_pre", "n_post", "pct_kept",
