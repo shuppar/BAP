@@ -41,12 +41,23 @@ Inputs:
 
 Outputs:
   {results_dir}/plots/08c_pathways/{contrast}/{level}/{celltype}/
-    - gsea_top_pathways.png     : top enriched pathways NAMED, colored by NES
+    - gsea_dotplot_panels.png   : dot plots, ONE PANEL PER COLLECTION side by side
+    - gsea_volcano_panels.png   : pathway volcanoes, one panel per collection
+    - running_<coll>_<pathway>.png : GSEA running-enrichment for top hits per collection
+    {contrast}/{level}/celltype_pathway_heatmap_panels.png :
+        cell-type x pathway NES heatmap, one panel per collection (shared cell-type axis)
+  All panel figures scale width with the number of collections so panels stay
+  full-size (no clipping); within-collection FDR throughout.
   {results_dir}/tables/pathway_results.csv
-    [contrast, flag, group_level, celltype, source(geneset), NES, pvalue, FDR, note]
+    [contrast, flag, group_level, celltype, source, collection, NES, pvalue,
+     FDR(per-collection), FDR_pooled, note]
+  FDR is BH-corrected WITHIN each collection (MH/M2/M5/M8) by default — keeps the
+  50 Hallmark sets from being buried under thousands of GO:BP sets. FDR_pooled
+  (BH across all sets) is kept as a reference column.
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -88,6 +99,11 @@ def load_genesets_tsv(path, collections, min_genes):
     return net
 
 
+def _safe(name):
+    """Filesystem-safe token for folder/file names."""
+    return re.sub(r"[^0-9A-Za-z._-]+", "_", str(name)).strip("_")
+
+
 def get_symbol_map(adata):
     for col in ("symbol", "gene_symbol", "gene_symbols", "Symbol"):
         if col in adata.var.columns:
@@ -98,63 +114,222 @@ def get_symbol_map(adata):
 def run_gsea_on_ranks(rank_series, net, min_genes, times, seed=42):
     """Run GSEA on a single ranking vector (index=gene symbol, values=stat).
 
-    Version-robust across decoupler 2.0 (dc.mt.gsea, matrix/df input) and
-    1.9 (dc.get_gsea_df, long-format DE table). Returns a tidy DataFrame with
-    columns [source, NES, pvalue, FDR] (names normalized by the caller).
+    Returns a tidy DataFrame [source, NES, pvalue]. FDR is intentionally NOT
+    computed here — the caller applies BH correction (both per-collection and
+    pooled) once the collection of each set is known, so multiple-testing is
+    handled consistently regardless of decoupler version.
+    Version-robust across decoupler 2.0 (dc.mt.gsea) and 1.9 (get_gsea_df).
     """
     import decoupler as dc
 
-    # decoupler 2.0: dc.mt.gsea on a 1-row DataFrame (1 "sample" x genes).
     if hasattr(dc, "mt") and hasattr(dc.mt, "gsea"):
-        mat = rank_series.to_frame().T          # 1 x n_genes
+        mat = rank_series.to_frame().T
         mat.index = ["contrast"]
-        # 2.0 returns results into the object / as a tuple depending on input type.
-        # For a DataFrame, dc.mt.gsea returns (estimate_df, pvalue_df).
         out = dc.mt.gsea(data=mat, net=net, tmin=min_genes, times=times, seed=seed)
         if isinstance(out, tuple):
             est, pval = out[0], out[1]
-            res = pd.DataFrame({
-                "source": est.columns,
-                "NES": est.iloc[0].values,
-                "pvalue": pval.iloc[0].values,
-            })
-        else:  # AnnData-like fallback
-            est = out
-            res = pd.DataFrame({"source": est.columns, "NES": est.iloc[0].values})
-        # BH-adjust
-        if "pvalue" in res.columns:
-            from scipy.stats import false_discovery_control
-            res["FDR"] = false_discovery_control(res["pvalue"].fillna(1.0))
-        return res
+            return pd.DataFrame({"source": est.columns, "NES": est.iloc[0].values,
+                                 "pvalue": pval.iloc[0].values})
+        est = out
+        return pd.DataFrame({"source": est.columns, "NES": est.iloc[0].values,
+                             "pvalue": np.nan})
 
-    # decoupler 1.9 fallback: long-format wrapper.
+    # decoupler 1.9 fallback
     df = rank_series.to_frame("stat")
-    gsea = dc.get_gsea_df(df, stat="stat", net=net,
-                          source="source", target="target",
-                          times=times, min_n=min_genes)
-    gsea = gsea.reset_index().rename(columns={"index": "source"})
-    return gsea
+    gsea = dc.get_gsea_df(df, stat="stat", net=net, source="source", target="target",
+                          times=times, min_n=min_genes).reset_index()
+    nes = next((c for c in gsea.columns if "nes" in c.lower()), "NES")
+    pv = next((c for c in gsea.columns if c.lower() in ("pval", "pvalue", "p_value")), None)
+    src = "source" if "source" in gsea.columns else gsea.columns[0]
+    return pd.DataFrame({"source": gsea[src], "NES": gsea[nes],
+                         "pvalue": gsea[pv] if pv else np.nan})
 
 
-def plot_top_pathways(res, title, out, n=20):
-    """Horizontal bar of top pathways by |NES|, NAMED, colored by sign,
-    significant (FDR<0.05) outlined."""
-    if res.empty:
-        return
-    nes_col = "NES" if "NES" in res.columns else next((c for c in res.columns if "nes" in c.lower()), None)
-    fdr_col = next((c for c in res.columns if c.lower() in ("fdr", "padj", "adj_pvalue")), None)
-    if nes_col is None:
-        return
-    r = res.reindex(res[nes_col].abs().sort_values(ascending=False).index).head(n)
-    colors = ["salmon" if v > 0 else "steelblue" for v in r[nes_col]]
-    edges = ["black" if (fdr_col and r.loc[i, fdr_col] < 0.05) else "none" for i in r.index]
-    fig, ax = plt.subplots(figsize=(7.5, max(3, 0.4 * len(r))))
-    ax.barh(r["source"].astype(str), r[nes_col], color=colors, edgecolor=edges, linewidth=1.2)
-    ax.axvline(0, color="k", lw=0.8)
-    ax.invert_yaxis()
-    ax.set_xlabel("NES (red=up in stress, blue=down; black outline=FDR<0.05)")
+def add_fdr(gsea, collection_map):
+    """Attach collection, then BH-correct two ways: within each collection
+    (the kosher default — keeps small high-quality collections from being
+    buried by large redundant ones) and pooled across all sets (reference)."""
+    from scipy.stats import false_discovery_control
+    g = gsea.copy()
+    g["collection"] = g["source"].map(collection_map).fillna("NA")
+    p = g["pvalue"].fillna(1.0).values
+    # pooled
+    g["FDR_pooled"] = false_discovery_control(p) if np.isfinite(p).any() else np.nan
+    # per-collection
+    g["FDR"] = np.nan
+    for coll, idx in g.groupby("collection").groups.items():
+        sub = g.loc[idx, "pvalue"].fillna(1.0).values
+        g.loc[idx, "FDR"] = false_discovery_control(sub) if len(sub) else np.nan
+    return g
+
+
+def _draw_dotplot(ax, gsea, set_sizes, title, n=20, fdr_thr=0.05):
+    """Draw a dot plot onto a given axes. Returns the scatter handle (for colorbar)."""
+    g = gsea.dropna(subset=["NES"]).copy()
+    if g.empty:
+        ax.text(0.5, 0.5, "no enriched sets", ha="center", va="center",
+                transform=ax.transAxes, fontsize=8, color="gray")
+        ax.set_title(title, fontsize=9); ax.axis("off")
+        return None
+    g["neglog10fdr"] = -np.log10(g["FDR"].clip(lower=1e-300))
+    g = g.reindex(g["FDR"].fillna(1).sort_values().index).head(n)
+    sizes = np.array([set_sizes.get(s, 10) for s in g["source"]], float)
+    sizes = 30 + 220 * (sizes - sizes.min()) / (np.ptp(sizes) + 1e-9)
+    sc_ = ax.scatter(g["NES"], range(len(g)), s=sizes, c=g["neglog10fdr"],
+                     cmap="viridis", edgecolor="k", linewidth=0.4, zorder=3)
+    ax.set_yticks(range(len(g))); ax.set_yticklabels(g["source"].astype(str), fontsize=7)
+    ax.invert_yaxis(); ax.axvline(0, color="k", lw=0.8, zorder=1)
+    ax.set_xlabel("NES (>0 up in stress)")
     ax.set_title(title, fontsize=9)
-    fig.tight_layout(); fig.savefig(out, dpi=140, bbox_inches="tight"); plt.close(fig)
+    return sc_
+
+
+def _draw_volcano(ax, gsea, title, fdr_thr=0.05, max_labels=20):
+    """Draw a pathway volcano onto a given axes."""
+    g = gsea.dropna(subset=["NES", "FDR"]).copy()
+    if g.empty:
+        ax.text(0.5, 0.5, "no enriched sets", ha="center", va="center",
+                transform=ax.transAxes, fontsize=8, color="gray")
+        ax.set_title(title, fontsize=9); ax.axis("off")
+        return
+    g["neglog10fdr"] = -np.log10(g["FDR"].clip(lower=1e-300))
+    sig = g["FDR"] < fdr_thr
+    ax.scatter(g.loc[~sig, "NES"], g.loc[~sig, "neglog10fdr"], s=10,
+               color="lightgray", rasterized=True)
+    ax.scatter(g.loc[sig, "NES"], g.loc[sig, "neglog10fdr"], s=16,
+               c=["salmon" if v > 0 else "steelblue" for v in g.loc[sig, "NES"]])
+    ax.axhline(-np.log10(fdr_thr), color="k", lw=0.6, ls="--")
+    ax.axvline(0, color="k", lw=0.6)
+    ax.set_xlabel("NES (red=up, blue=down)"); ax.set_ylabel("-log10 FDR")
+    ax.set_title(title, fontsize=9)
+    lab = g[sig].reindex(g[sig]["FDR"].sort_values().index).head(max_labels)
+    texts = [ax.text(r["NES"], r["neglog10fdr"], str(r["source"])[:45], fontsize=6)
+             for _, r in lab.iterrows()]
+    if texts:
+        try:
+            from adjustText import adjust_text
+            adjust_text(texts, ax=ax, arrowprops=dict(arrowstyle="-", color="gray", lw=0.3))
+        except ImportError:
+            pass
+    ax.text(0.02, 0.98, f"{int(sig.sum())} sig", transform=ax.transAxes,
+            fontsize=6, va="top", color="gray")
+
+
+def _draw_heatmap(ax, per_ct_coll, title, n_paths=25, fdr_thr=0.05):
+    """Draw a cell-type x pathway NES heatmap onto a given axes. Returns image handle."""
+    frames = []
+    for ct, g in per_ct_coll.items():
+        gg = g[["source", "NES", "FDR"]].copy(); gg["celltype"] = ct
+        frames.append(gg)
+    if not frames:
+        ax.text(0.5, 0.5, "no enriched sets", ha="center", va="center",
+                transform=ax.transAxes, fontsize=8, color="gray")
+        ax.set_title(title, fontsize=9); ax.axis("off")
+        return None
+    long = pd.concat(frames, ignore_index=True)
+    top_paths = (long.sort_values("FDR").drop_duplicates("source").head(n_paths)["source"].tolist())
+    long = long[long["source"].isin(top_paths)]
+    nes_mat = long.pivot_table(index="source", columns="celltype", values="NES").reindex(top_paths)
+    fdr_mat = long.pivot_table(index="source", columns="celltype", values="FDR").reindex(top_paths)
+    if nes_mat.empty:
+        ax.text(0.5, 0.5, "no enriched sets", ha="center", va="center",
+                transform=ax.transAxes, fontsize=8, color="gray")
+        ax.set_title(title, fontsize=9); ax.axis("off")
+        return None
+    vmax = np.nanmax(np.abs(nes_mat.values)) or 1
+    im = ax.imshow(nes_mat.values, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(nes_mat.shape[1]))
+    ax.set_xticklabels(nes_mat.columns, rotation=45, ha="right", fontsize=7)
+    ax.set_yticks(range(nes_mat.shape[0])); ax.set_yticklabels(nes_mat.index, fontsize=6)
+    for i, path in enumerate(nes_mat.index):
+        for j, ct in enumerate(nes_mat.columns):
+            f = (fdr_mat.loc[path, ct] if (path in fdr_mat.index and ct in fdr_mat.columns)
+                 else np.nan)
+            if pd.notna(f) and f < fdr_thr:
+                ax.text(j, i, "•", ha="center", va="center", fontsize=9, color="black")
+    ax.set_title(title, fontsize=9)
+    return im
+
+
+def panel_by_collection(gsea_full, kind, title, out, **kw):
+    """One wide figure with a subplot per collection (paper-panel style).
+
+    kind: 'dotplot' | 'volcano'. gsea_full has a 'collection' column. The figure
+    width scales with the number of collections present, so each panel stays
+    full-size (no shrinking, no clipping). FDR is already per-collection.
+    """
+    colls = [c for c in ["MH", "M2", "M5", "M8"] if c in set(gsea_full["collection"])]
+    colls += [c for c in sorted(set(gsea_full["collection"])) if c not in colls]
+    if not colls:
+        return
+    per_w = 6.5 if kind == "volcano" else 7.0
+    fig, axes = plt.subplots(1, len(colls), figsize=(per_w * len(colls), 6.0),
+                             squeeze=False, constrained_layout=True)
+    axes = axes[0]
+    last_handle = None
+    for ax, coll in zip(axes, colls):
+        gc = gsea_full[gsea_full["collection"] == coll]
+        if kind == "dotplot":
+            last_handle = _draw_dotplot(ax, gc, kw["set_sizes"], coll) or last_handle
+        else:
+            _draw_volcano(ax, gc, coll)
+    if kind == "dotplot" and last_handle is not None:
+        cb = fig.colorbar(last_handle, ax=axes, pad=0.01, fraction=0.025)
+        cb.set_label("-log10 FDR", fontsize=8)
+    fig.suptitle(f"{title}  —  per-collection panels (within-collection FDR)", fontsize=10)
+    # constrained_layout handles suptitle/colorbar spacing without clipping;
+    # do NOT also pass bbox_inches='tight' (the two fight each other).
+    fig.savefig(out, dpi=140); plt.close(fig)
+
+
+def panel_heatmap_by_collection(per_ct, title, out, n_paths=25, fdr_thr=0.05):
+    """One wide figure: a cell-type x pathway heatmap subplot per collection."""
+    colls_all = sorted({c for g in per_ct.values() for c in g["collection"].unique()})
+    colls = [c for c in ["MH", "M2", "M5", "M8"] if c in colls_all]
+    colls += [c for c in colls_all if c not in colls]
+    if not colls:
+        return
+    fig, axes = plt.subplots(1, len(colls), figsize=(7.0 * len(colls), 8.0),
+                             squeeze=False, constrained_layout=True)
+    axes = axes[0]
+    last_im = None
+    for ax, coll in zip(axes, colls):
+        per_ct_coll = {ct: g[g["collection"] == coll] for ct, g in per_ct.items()}
+        per_ct_coll = {ct: g for ct, g in per_ct_coll.items() if not g.empty}
+        im = _draw_heatmap(ax, per_ct_coll, coll, n_paths=n_paths, fdr_thr=fdr_thr)
+        last_im = im or last_im
+    if last_im is not None:
+        cb = fig.colorbar(last_im, ax=axes, pad=0.01, fraction=0.02)
+        cb.set_label("NES", fontsize=8)
+    fig.suptitle(f"{title}  —  NES by cell type x pathway (• = FDR<{fdr_thr}, per-collection)",
+                 fontsize=10)
+    fig.savefig(out, dpi=140); plt.close(fig)
+
+
+def plot_running_enrichment(rank_series, members, title, out):
+    """Classic GSEA running-enrichment 'mountain' plot for ONE pathway.
+    (Single-pathway by nature — not panelled.)"""
+    r = rank_series.sort_values(ascending=False)
+    genes = r.index.to_numpy()
+    in_set = np.isin(genes, list(members))
+    if in_set.sum() < 2:
+        return
+    scores = np.abs(r.values) ** 1.0
+    hit_norm = scores[in_set].sum()
+    miss_norm = (~in_set).sum()
+    inc = np.where(in_set, scores / (hit_norm + 1e-12), -1.0 / (miss_norm + 1e-12))
+    running = np.cumsum(inc)
+    es_idx = np.argmax(np.abs(running))
+    fig, (a1, a2) = plt.subplots(2, 1, figsize=(7, 5), height_ratios=[3, 1], sharex=True)
+    a1.plot(running, color="green", lw=1.3)
+    a1.axhline(0, color="k", lw=0.6)
+    a1.scatter([es_idx], [running[es_idx]], color="red", zorder=5,
+               label=f"ES={running[es_idx]:.2f}")
+    a1.set_ylabel("running enrichment"); a1.legend(fontsize=7, loc="best")
+    a1.set_title(title, fontsize=9)
+    a2.vlines(np.where(in_set)[0], 0, 1, color="black", lw=0.5)
+    a2.set_yticks([]); a2.set_xlabel("gene rank (high stat -> low)")
+    fig.savefig(out, dpi=140, bbox_inches="tight"); plt.close(fig)
 
 
 def main():
@@ -240,51 +415,82 @@ def main():
             f"  Refusing to run GSEA that would silently return no pathways."
         )
 
+    set_sizes = net.groupby("source").size().to_dict()
+    collection_map = dict(net.drop_duplicates("source").set_index("source")["collection"])
+    n_top_running = int(pcfg.get("n_running_enrichment", 3))
+
     rows = []
-    # iterate per contrast x group_level x celltype
-    keys = ["contrast", "group_level", "celltype"]
-    for (contrast, level, ct), sub in de.groupby(keys, observed=True):
-        sub = sub.dropna(subset=[args.stat_col, "gene"]).copy()
-        if sub.shape[0] < 10:
-            continue
-        sub["gene_sym"] = (sub["gene"].astype(str).map(lambda g: symbol_map.get(g, g))
-                           if symbol_map else sub["gene"].astype(str))
-        # collapse duplicate symbols (keep max |stat|)
-        sub = (sub.reindex(sub[args.stat_col].abs().sort_values(ascending=False).index)
-                  .drop_duplicates("gene_sym"))
-        rank_series = sub.set_index("gene_sym")[args.stat_col]
-        flag = sub["flag"].iloc[0] if "flag" in sub.columns else None
-        note = sub["note"].iloc[0] if "note" in sub.columns else ""
+    # Group by contrast x group_level so we can build a cross-cell-type heatmap
+    # per contrast, while still emitting per-cell-type dot/volcano/mountain plots.
+    for (contrast, level), block in de.groupby(["contrast", "group_level"], observed=True):
+        per_ct = {}   # celltype -> gsea df (with FDR) for the heatmap
+        for ct, sub in block.groupby("celltype", observed=True):
+            sub = sub.dropna(subset=[args.stat_col, "gene"]).copy()
+            if sub.shape[0] < 10:
+                continue
+            sub["gene_sym"] = (sub["gene"].astype(str).map(lambda g: symbol_map.get(g, g))
+                               if symbol_map else sub["gene"].astype(str))
+            sub = (sub.reindex(sub[args.stat_col].abs().sort_values(ascending=False).index)
+                      .drop_duplicates("gene_sym"))
+            rank_series = sub.set_index("gene_sym")[args.stat_col].astype(float)
+            flag = sub["flag"].iloc[0] if "flag" in sub.columns else None
+            note = sub["note"].iloc[0] if "note" in sub.columns else ""
 
-        try:
-            gsea = run_gsea_on_ranks(rank_series, net, min_genes, args.times)
-        except Exception as e:
-            print(f"  [warn] GSEA failed for {contrast}|{level}|{ct}: {e}")
-            continue
-        if gsea is None or gsea.empty:
-            continue
+            try:
+                gsea = run_gsea_on_ranks(rank_series, net, min_genes, args.times)
+            except Exception as e:
+                print(f"  [warn] GSEA failed for {contrast}|{level}|{ct}: {e}")
+                continue
+            if gsea is None or gsea.empty:
+                continue
+            gsea = add_fdr(gsea, collection_map)   # per-collection + pooled FDR
+            per_ct[ct] = gsea
 
-        pdir = plot_root / str(contrast) / str(level) / str(ct).replace("/", "_").replace(" ", "_")
-        pdir.mkdir(parents=True, exist_ok=True)
-        plot_top_pathways(gsea, f"{contrast}\n{level} | {ct}", pdir / "gsea_top_pathways.png")
+            cts = str(ct).replace("/", "_").replace(" ", "_")
+            pdir = plot_root / str(contrast) / str(level) / cts
+            pdir.mkdir(parents=True, exist_ok=True)
+            ttl = f"{contrast} | {level} | {ct}"
+            # Multi-panel figures: one subplot per collection, side by side.
+            # Figure width scales with #collections so panels stay full-size.
+            panel_by_collection(gsea, "dotplot", ttl, pdir / "gsea_dotplot_panels.png",
+                                set_sizes=set_sizes)
+            panel_by_collection(gsea, "volcano", ttl, pdir / "gsea_volcano_panels.png")
+            # Running-enrichment: top significant per collection (single-pathway plots).
+            for coll, gcoll in gsea.groupby("collection", observed=True):
+                top_sig = gcoll.dropna(subset=["FDR"]).sort_values("FDR").head(n_top_running)
+                for _, tp in top_sig.iterrows():
+                    members = set(net.loc[net["source"] == tp["source"], "target"])
+                    plot_running_enrichment(
+                        rank_series, members,
+                        f"{ct} | {coll} | {str(tp['source'])[:45]} (FDR={tp['FDR']:.2g})",
+                        pdir / f"running_{_safe(coll)}_{_safe(str(tp['source'])[:35])}.png")
 
-        nes_col = "NES" if "NES" in gsea.columns else next(
-            (c for c in gsea.columns if "nes" in c.lower()), None)
-        fdr_col = next((c for c in gsea.columns if c.lower() in ("fdr", "padj")), None)
-        p_col = next((c for c in gsea.columns if c.lower() in ("pval", "pvalue", "p_value")), None)
-        for _, g in gsea.iterrows():
-            rows.append({
-                "contrast": contrast, "flag": flag, "group_level": level, "celltype": ct,
-                "source": g.get("source"),
-                "NES": g.get(nes_col) if nes_col else None,
-                "pvalue": g.get(p_col) if p_col else None,
-                "FDR": g.get(fdr_col) if fdr_col else None,
-                "note": note,
-            })
+            for _, g in gsea.iterrows():
+                rows.append({
+                    "contrast": contrast, "flag": flag, "group_level": level, "celltype": ct,
+                    "source": g["source"], "collection": g["collection"],
+                    "NES": g["NES"], "pvalue": g["pvalue"],
+                    "FDR": g["FDR"], "FDR_pooled": g["FDR_pooled"], "note": note,
+                })
 
+        # Cross-cell-type heatmap per contrast x level — one panel per collection.
+        if per_ct:
+            ldir = plot_root / str(contrast) / str(level)
+            ldir.mkdir(parents=True, exist_ok=True)
+            panel_heatmap_by_collection(per_ct, f"{contrast} | {level}",
+                                        ldir / "celltype_pathway_heatmap_panels.png")
+
+    df_rows = pd.DataFrame(rows)
     out_csv = rdir / "tables" / f"pathway_results{out_suffix}.csv"
-    pd.DataFrame(rows).to_csv(out_csv, index=False)
+    df_rows.to_csv(out_csv, index=False)
     print(f"\n  Master table: {out_csv}  ({len(rows)} rows)")
+    # Per-collection sub-tables (paper-panel style)
+    if not df_rows.empty:
+        for coll, sub in df_rows.groupby("collection"):
+            sub_path = rdir / "tables" / f"pathway_results{out_suffix}_{_safe(str(coll))}.csv"
+            sub.to_csv(sub_path, index=False)
+        print(f"  Per-collection tables: pathway_results{out_suffix}_<collection>.csv "
+              f"({df_rows['collection'].nunique()} collections)")
 
     # Optional TF activity (CollecTRI) — needs network; guarded.
     if run_tf:
