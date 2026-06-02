@@ -59,6 +59,8 @@ dependencies = [
 
     # --- Composition ---
     "sccoda>=0.1.9",                        # Bayesian compositional analysis
+    "tf-keras>=2.15",                       # required by scCODA's TF-Probability backend
+                                            # (TFP no longer auto-installs Keras)
 
     # --- Trajectory & velocity (P0 brain only) ---
     "scvelo>=0.3",                          # RNA velocity (with Flex feasibility diagnostic)
