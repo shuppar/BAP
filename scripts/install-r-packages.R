@@ -12,6 +12,7 @@
 #   - Matrix             : sparse matrices (required by scDblFinder)
 #   - SingleCellExperiment : SCE object format (scDblFinder input)
 #   - DropletUtils       : 10x-format I/O on the R side
+#   - speckle / limma    : propeller composition analysis (Phase 8a)
 #
 # All packages installed into a project-local library managed by renv,
 # so the system R installation isn't touched.
@@ -70,7 +71,9 @@ if (file.exists("renv.lock")) {
     "SingleCellExperiment",
     "DropletUtils",
     "scran",          # used by scDblFinder for normalization
-    "scuttle"         # used by scDblFinder for QC
+    "scuttle",        # used by scDblFinder for QC
+    "speckle",        # propeller — Phase 8a composition (replaces scCODA)
+    "limma"           # required by propeller (empirical-Bayes moderation)
   )
   message("[setup] Installing Bioconductor packages: ", paste(bioc_packages, collapse = ", "))
   BiocManager::install(bioc_packages, ask = FALSE, update = FALSE)
@@ -90,7 +93,7 @@ if (file.exists("renv.lock")) {
 # -- 9. Sanity check: load every package once to confirm it works --
 message("[setup] Verifying packages load correctly...")
 required <- c("scDblFinder", "edgeR", "CellChat", "jsonlite",
-              "SingleCellExperiment", "DropletUtils")
+              "SingleCellExperiment", "DropletUtils", "speckle", "limma")
 for (pkg in required) {
   ok <- suppressMessages(requireNamespace(pkg, quietly = TRUE))
   if (!ok) {

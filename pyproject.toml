@@ -58,9 +58,10 @@ dependencies = [
     "omnipath>=1.0",                        # resource used by decoupler
 
     # --- Composition ---
-    "sccoda>=0.1.9",                        # Bayesian compositional analysis
-    "tf-keras>=2.15",                       # required by scCODA's TF-Probability backend
-                                            # (TFP no longer auto-installs Keras)
+    # scCODA is NOT a main-env dependency. Its old arviz (<1.0) + matplotlib (<3.7)
+    # pins conflict with the modern scanpy/scVI stack, so it runs in an isolated
+    # sidecar venv (.venv-sccoda) called by 08a via subprocess. See setup-remote.sh
+    # for the sidecar install, and scripts/run_sccoda.py for the entry point.
 
     # --- Trajectory & velocity (P0 brain only) ---
     "scvelo>=0.3",                          # RNA velocity (with Flex feasibility diagnostic)
@@ -82,6 +83,8 @@ dependencies = [
 
     # --- Plotting & reporting ---
     "matplotlib>=3.8",
+    "adjustText>=1.0",                      # non-overlapping gene labels on volcano plots
+                                            # (08b); pure-Python, optional at runtime
     "seaborn>=0.13",
     "plotly>=5.20",
     "jupyterlab>=4.0",

@@ -12,7 +12,7 @@
 #   1. Installs uv (single static binary in ~/.local/bin) if not present
 #   2. Creates a project-local Python venv at ./.venv via `uv sync`
 #   3. Installs R via apt if not present
-#   4. Installs the R packages needed for scDblFinder / edgeR / CellChat
+#   4. Installs the R packages needed for scDblFinder / edgeR / CellChat / speckle
 #   5. Sets up a separate venv for CellBender (different PyTorch pin)
 #   6. Prints next-step instructions
 #
@@ -135,6 +135,14 @@ if [[ $SKIP_CELLBENDER -eq 0 ]]; then
 else
   log "Skipping CellBender venv (--skip-cellbender given)"
 fi
+
+# ============================================================================
+# 5b. (removed) scCODA sidecar — composition analysis now uses propeller
+#     (speckle + limma) via R subprocess. speckle/limma install with the other
+#     Bioconductor packages in scripts/install-r-packages.R (step 4 above), so
+#     there is no separate venv to build here. scDblFinder/edgeR/CellChat/speckle
+#     all share the project-local renv library.
+# ============================================================================
 
 # ============================================================================
 # 6. Summary & next steps

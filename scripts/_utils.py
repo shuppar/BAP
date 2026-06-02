@@ -57,7 +57,8 @@ def load_config(path: Path) -> dict:
             sys.exit(f"ERROR: samples_from={src_path} has no 'samples' key")
         cfg["samples"] = src_cfg["samples"]
         # Inherit tissue-level blocks the dev config didn't override.
-        for key in ("annotation", "reference"):
+        for key in ("annotation", "reference", "contrasts", "stress_focused_cell_types",
+                    "composition", "pathways"):
             if key not in cfg and key in src_cfg:
                 cfg[key] = src_cfg[key]
 
@@ -85,6 +86,17 @@ def load_config(path: Path) -> dict:
                 p = Path(s[key])
                 if not p.is_absolute():
                     s[key] = str((cwd / p).resolve())
+
+    # --- Resolve results_dir to absolute too ---
+    # Phase scripts build input/output paths from results_dir. Leaving it
+    # relative makes every script silently depend on the current working
+    # directory — "file not found" when the file actually exists, just under a
+    # different CWD. Anchoring it here removes that footgun: scripts work from
+    # anywhere, not only from the repo root.
+    if "results_dir" in cfg:
+        rp = Path(cfg["results_dir"])
+        if not rp.is_absolute():
+            cfg["results_dir"] = str((cwd / rp).resolve())
 
     return cfg
 

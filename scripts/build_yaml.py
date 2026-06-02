@@ -46,6 +46,26 @@ SHARED_CONFIG = {
         "y_linked": ["Ddx3y", "Uty", "Eif2s3y", "Kdm5d"],
         "x_linked": ["Xist"],
     },
+    "composition": {
+        # Phase 8a: min donors (samples) per group to attempt scCODA. Below 3 the
+        # Bayesian variance estimate is essentially unconstrained. Lower to 2 to
+        # attempt n=2 groups (e.g. P1 Late Stress) — those run flagged
+        # 'unreliable_n<3' in composition_results.csv. CLI --min-donors overrides.
+        "min_donors": 3,
+    },
+    "pathways": {
+        # Phase 8c: GSEA on DE stats. Gene sets come from a single MSigDB export
+        # TSV produced by scripts/fetch_genesets.R (msigdbr, mouse-native — the
+        # decoupler get_resource(MSigDB, mouse) path is broken). Generate once:
+        #   Rscript scripts/fetch_genesets.R --out refs/msigdb_mouse.tsv
+        "geneset_tsv": "refs/msigdb_mouse.tsv",
+        # MH=hallmark, M2=Reactome(curated), M5=GO:BP(ontology), M8=cell-type sigs
+        # (M8 esp. useful for 7b subclusters: "does this match a known state?").
+        "collections": ["MH", "M2", "M5", "M8"],
+        "min_genes_per_set": 5,
+        "use_builtin_stress_sets": False,   # optional niche supplement (off)
+        "run_tf_activity": False,           # CollecTRI TF activity (needs network)
+    },
     "random_seed": 42,
 }
 

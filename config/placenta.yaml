@@ -223,6 +223,18 @@ sex_markers:
   - Kdm5d
   x_linked:
   - Xist
+composition:
+  min_donors: 3
+pathways:
+  geneset_tsv: refs/msigdb_mouse.tsv
+  collections:
+  - MH
+  - M2
+  - M5
+  - M8
+  min_genes_per_set: 5
+  use_builtin_stress_sets: false
+  run_tf_activity: false
 random_seed: 42
 annotation:
   celltypist_models: {}
