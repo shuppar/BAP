@@ -44,7 +44,11 @@ def load_config(path: Path) -> dict:
     with path.open() as f:
         cfg = yaml.safe_load(f)
 
-    # --- Indirection: pull sample records from another YAML if requested ---
+    # --- Indirection: pull records from another YAML if requested ---
+    # `samples_from` brings in the sample list AND any tissue-level config blocks
+    # the dev config doesn't redefine (annotation, reference). This keeps
+    # dev.yaml minimal: it inherits brain.yaml's reference/annotation config
+    # rather than having to duplicate it. Locally-defined keys win over inherited.
     if "samples_from" in cfg:
         src_path = Path(cfg["samples_from"])
         with src_path.open() as f:
@@ -52,6 +56,10 @@ def load_config(path: Path) -> dict:
         if "samples" not in src_cfg:
             sys.exit(f"ERROR: samples_from={src_path} has no 'samples' key")
         cfg["samples"] = src_cfg["samples"]
+        # Inherit tissue-level blocks the dev config didn't override.
+        for key in ("annotation", "reference"):
+            if key not in cfg and key in src_cfg:
+                cfg[key] = src_cfg[key]
 
     if "samples" not in cfg:
         sys.exit(f"ERROR: config {path} has no 'samples' (and no samples_from)")
@@ -189,3 +197,81 @@ def select_accelerator(force_cpu: bool = False) -> tuple[str, str]:
     except Exception:
         pass
     return "cpu", "32-true"
+
+
+# ============================================================================
+# Declarative contrast spec (Phase 8)
+# ============================================================================
+
+# Recognized flags — anything else is a typo we want to catch early.
+_VALID_CONTRAST_FLAGS = {
+    "primary", "secondary", "confounded_with_pool",
+    "underpowered_exploratory", "derived",
+}
+
+
+def load_contrasts(cfg: dict, kind: str = "de") -> dict:
+    """Return the validated `contrasts:` block from a tissue config.
+
+    kind: "de" returns only DE-style contrasts (those with a `test`); "derived"
+          returns only post-hoc set-operation contrasts (those with
+          `source_contrast`); "all" returns everything. Phase 8a/8b/8c/8e want
+          "de"; 8g wants "derived".
+
+    Validates each contrast so malformed entries fail HERE (config load), not
+    deep inside a multi-hour DE run. Hard-fails on:
+      - missing `contrasts` block
+      - unknown flag
+      - pairwise contrast missing `levels` (unless omnibus or derived)
+      - derived contrast missing `source_contrast`
+    """
+    contrasts = cfg.get("contrasts")
+    if not contrasts:
+        import sys
+        sys.exit(
+            "ERROR: no 'contrasts:' block in config. Phase 8 needs one.\n"
+            "  Re-run build_yaml.py (which now emits it) for this tissue."
+        )
+
+    import sys
+    validated = {}
+    for name, spec in contrasts.items():
+        flag = spec.get("flag")
+        if flag not in _VALID_CONTRAST_FLAGS:
+            sys.exit(f"ERROR: contrast '{name}' has unknown flag {flag!r}. "
+                     f"Valid: {sorted(_VALID_CONTRAST_FLAGS)}")
+
+        is_derived = "source_contrast" in spec
+        is_omnibus = spec.get("test") == "group_omnibus"
+        is_interaction = spec.get("test", "").find(":") >= 0
+        is_pairwise_age = "pairwise" in spec
+
+        if is_derived:
+            # post-hoc set op: must point at a real source contrast
+            src_name = spec["source_contrast"]
+            if src_name not in contrasts:
+                sys.exit(f"ERROR: derived contrast '{name}' references unknown "
+                         f"source_contrast '{src_name}'.")
+        else:
+            # DE-style: needs a design + test
+            if "design" not in spec:
+                sys.exit(f"ERROR: contrast '{name}' missing 'design'.")
+            if "test" not in spec:
+                sys.exit(f"ERROR: contrast '{name}' missing 'test'.")
+            # pairwise level contrasts need exactly [test_level, reference_level]
+            if not (is_omnibus or is_interaction or is_pairwise_age):
+                lv = spec.get("levels")
+                if not (isinstance(lv, list) and len(lv) == 2):
+                    sys.exit(f"ERROR: contrast '{name}' needs levels=[test, reference] "
+                             f"(got {lv!r}).")
+
+        # Filter by requested kind
+        if kind == "de" and is_derived:
+            continue
+        if kind == "derived" and not is_derived:
+            continue
+        validated[name] = spec
+
+    if not validated:
+        sys.exit(f"ERROR: no contrasts of kind '{kind}' found in config.")
+    return validated

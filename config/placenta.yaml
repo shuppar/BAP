@@ -224,3 +224,39 @@ sex_markers:
   x_linked:
   - Xist
 random_seed: 42
+annotation:
+  celltypist_models: {}
+reference:
+  ref_h5ad: null
+  labels_key: cell_type
+  region_key: null
+  region_concentration_threshold: 0.8
+contrasts:
+  early_vs_relaxed_E12.5:
+    description: "E12.5 placenta Early vs Relaxed \u2014 primary (mostly Pool3; 2 Relaxed in Pool4)"
+    design: ~ pool + group
+    group_by: age
+    test: group
+    levels:
+    - Early_Stress
+    - Relaxed
+    flag: primary
+    subset:
+      age: E12.5
+  late_vs_relaxed_E18.5:
+    description: "E18.5 placenta Late vs Relaxed \u2014 primary (all Pool4, clean)"
+    design: ~ sex + group
+    group_by: age
+    test: group
+    levels:
+    - Late_Stress
+    - Relaxed
+    flag: primary
+    subset:
+      age: E18.5
+stress_focused_cell_types:
+- microglia
+- oligodendrocyte_lineage
+- excitatory_neurons
+- inhibitory_neurons
+- astrocytes
