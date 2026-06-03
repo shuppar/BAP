@@ -145,6 +145,29 @@ def run_gsea_on_ranks(rank_series, net, min_genes, times, seed=42):
                          "pvalue": gsea[pv] if pv else np.nan})
 
 
+def compute_leading_edge(rank_series, members, nes):
+    """Leading-edge genes for one pathway: the member genes that drive the
+    enrichment, with their ranking stat (DE Wald stat = magnitude + direction).
+
+    GSEA leading edge = members up to the running-sum peak. We approximate it
+    directionally from the NES sign (decoupler doesn't return the ES position):
+      NES > 0 (enriched at top, upregulated)  -> members with stat > 0
+      NES < 0 (enriched at bottom, down)       -> members with stat < 0
+    Returns a list of (gene, stat) tuples sorted by |stat| desc.
+
+    The 'stat' here is whatever 8b ranked on (default DESeq2 Wald 'stat'), so
+    sign = direction of regulation in the contrast, magnitude = strength.
+    """
+    present = [g for g in members if g in rank_series.index]
+    if not present:
+        return []
+    sub = rank_series.loc[present]
+    if nes is not None and not np.isnan(nes):
+        sub = sub[sub > 0] if nes > 0 else sub[sub < 0]
+    sub = sub.reindex(sub.abs().sort_values(ascending=False).index)
+    return list(zip(sub.index.tolist(), sub.values.tolist()))
+
+
 def add_fdr(gsea, collection_map):
     """Attach collection, then BH-correct two ways: within each collection
     (the kosher default — keeps small high-quality collections from being
@@ -338,6 +361,9 @@ def main():
     ap.add_argument("--stat-col", default="stat",
                     help="DE column to rank genes by (default: Wald 'stat')")
     ap.add_argument("--times", type=int, default=1000, help="GSEA permutations")
+    ap.add_argument("--le-fdr", type=float, default=0.05,
+                    help="FDR cutoff for which pathways get leading-edge gene rows "
+                         "(default 0.05). Leading-edge written to pathway_leading_edge.csv.")
     ap.add_argument("--subcluster", default=None,
                     help="Run on a 7b subcluster DE table instead of the main one. "
                          "Pass the cell-type slug (e.g. 'microglia') — reads "
@@ -420,6 +446,7 @@ def main():
     n_top_running = int(pcfg.get("n_running_enrichment", 3))
 
     rows = []
+    le_rows = []   # leading-edge: one row per contrast×level×celltype×pathway×gene
     # Group by contrast x group_level so we can build a cross-cell-type heatmap
     # per contrast, while still emitting per-cell-type dot/volcano/mountain plots.
     for (contrast, level), block in de.groupby(["contrast", "group_level"], observed=True):
@@ -433,6 +460,9 @@ def main():
             sub = (sub.reindex(sub[args.stat_col].abs().sort_values(ascending=False).index)
                       .drop_duplicates("gene_sym"))
             rank_series = sub.set_index("gene_sym")[args.stat_col].astype(float)
+            # gene_sym -> log2FC map (for leading-edge magnitude/direction)
+            lfc_map = (sub.set_index("gene_sym")["log2FC"].astype(float).to_dict()
+                       if "log2FC" in sub.columns else {})
             flag = sub["flag"].iloc[0] if "flag" in sub.columns else None
             note = sub["note"].iloc[0] if "note" in sub.columns else ""
 
@@ -473,6 +503,26 @@ def main():
                     "FDR": g["FDR"], "FDR_pooled": g["FDR_pooled"], "note": note,
                 })
 
+            # Leading-edge genes for significant pathways (FDR < le_fdr).
+            # One row per gene driving each enriched pathway, with log2FC + stat.
+            sig_gsea = gsea.dropna(subset=["FDR"])
+            sig_gsea = sig_gsea[sig_gsea["FDR"] < args.le_fdr]
+            for _, g in sig_gsea.iterrows():
+                members = set(net.loc[net["source"] == g["source"], "target"])
+                le = compute_leading_edge(rank_series, members, g["NES"])
+                for rank_i, (gene, stat_val) in enumerate(le, start=1):
+                    le_rows.append({
+                        "contrast": contrast, "group_level": level, "celltype": ct,
+                        "collection": g["collection"], "pathway": g["source"],
+                        "NES": round(float(g["NES"]), 4), "pathway_FDR": g["FDR"],
+                        "leading_edge_rank": rank_i,
+                        "gene": gene,
+                        "log2FC": round(lfc_map.get(gene, np.nan), 4),
+                        "rank_stat": round(float(stat_val), 4),
+                        "direction": "up" if stat_val > 0 else "down",
+                        "flag": flag, "note": note,
+                    })
+
         # Cross-cell-type heatmap per contrast x level — one panel per collection.
         if per_ct:
             ldir = plot_root / str(contrast) / str(level)
@@ -491,6 +541,19 @@ def main():
             sub.to_csv(sub_path, index=False)
         print(f"  Per-collection tables: pathway_results{out_suffix}_<collection>.csv "
               f"({df_rows['collection'].nunique()} collections)")
+
+    # Leading-edge genes per significant pathway (the genes driving each result,
+    # with log2FC magnitude + direction). One row per gene; join to the
+    # 08b expression matrix on (celltype, gene) for per-sample levels.
+    le_df = pd.DataFrame(le_rows)
+    le_csv = rdir / "tables" / f"pathway_leading_edge{out_suffix}.csv"
+    le_df.to_csv(le_csv, index=False)
+    if le_rows:
+        n_paths = le_df.groupby(["contrast", "group_level", "celltype", "pathway"]).ngroups
+        print(f"  Leading-edge table: {le_csv}  ({len(le_rows)} gene rows, "
+              f"{n_paths} significant pathways at FDR<{args.le_fdr})")
+    else:
+        print(f"  Leading-edge table: {le_csv}  (empty — no pathways below FDR<{args.le_fdr})")
 
     # Optional TF activity (CollecTRI) — needs network; guarded.
     if run_tf:

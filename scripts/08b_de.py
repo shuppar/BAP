@@ -111,6 +111,50 @@ def make_pseudobulk(adata_ct, covariates):
     return counts, meta, pd.Series(n_cells)
 
 
+def build_expression_matrix(adata, ct_key, genes, samples_meta_cols):
+    """Pseudobulk mean expression (lognorm) of `genes`, per cell type, per sample.
+
+    Long format: one row per (celltype, gene, sample_id) holding mean lognorm
+    expression + n_cells backing it (a mean over 3 cells is not a mean over 300).
+    Sample metadata (group, age, sex, pool) written as a companion table.
+
+    Returns (long_df, sample_meta_df).
+    """
+    import scipy.sparse as _sp
+    from _utils import add_lognorm
+    if "lognorm" not in adata.layers:
+        add_lognorm(adata)
+
+    genes = [g for g in genes if g in adata.var_names]
+    gi = [adata.var_names.get_loc(g) for g in genes]
+    L = adata.layers["lognorm"]
+    L = L.tocsc() if _sp.issparse(L) else L
+
+    samples = sorted(adata.obs["sample_id"].astype(str).unique())
+    ct_labels = adata.obs[ct_key].astype(str)
+    sid = adata.obs["sample_id"].astype(str)
+
+    rows = []
+    for ct in sorted(ct_labels.unique()):
+        for s in samples:
+            m = ((ct_labels == ct) & (sid == s)).values
+            n = int(m.sum())
+            if n == 0:
+                continue
+            subL = L[m][:, gi]
+            means = (np.asarray(subL.mean(axis=0)).ravel() if _sp.issparse(subL)
+                     else np.asarray(subL).mean(axis=0))
+            for gene, val in zip(genes, means):
+                rows.append({"celltype": ct, "gene": gene, "sample_id": s,
+                             "mean_lognorm": round(float(val), 5), "n_cells": n})
+
+    long_df = pd.DataFrame(rows)
+    meta = (adata.obs[["sample_id"] + samples_meta_cols]
+            .astype({"sample_id": str}).drop_duplicates("sample_id")
+            .set_index("sample_id"))
+    return long_df, meta
+
+
 def run_pydeseq2(counts, meta, design_terms, contrast_levels, test_factor, n_cpus=4):
     """Fit DESeq2 and run the Wald test for one pairwise contrast.
 
@@ -220,6 +264,13 @@ def main():
     ap.add_argument("--min-donors", type=int, default=None,
                     help="min donors per group with >=min-cells (default: composition.min_donors or 3)")
     ap.add_argument("--n-cpus", type=int, default=4)
+    ap.add_argument("--expr-matrix", action="store_true", default=True,
+                    help="Write per-sample expression matrix of DE genes (default on)")
+    ap.add_argument("--no-expr-matrix", dest="expr_matrix", action="store_false",
+                    help="Skip the per-sample expression matrix")
+    ap.add_argument("--expr-sig-only", action="store_true",
+                    help="Expression matrix uses only significant DE genes "
+                         "(padj<0.05 & |log2FC|>1); default uses all tested genes")
     ap.add_argument("--subcluster", default=None,
                     help="Run DE on a 7b subcluster object (slug, e.g. 'microglia'): "
                          "reads h5ad/08c_subclustered/{slug}.h5ad and uses the "
@@ -381,6 +432,38 @@ def main():
         n_sig = int(((dfh["padj"] < 0.05) & (dfh["log2FC"].abs() > 1)).sum())
     print(f"\n  Master table: {out_csv}  ({len(rows)} rows, {n_sig} at padj<0.05 & |log2FC|>1)")
     print(f"  Plots: {plot_root}")
+
+    # Per-sample expression matrix of DE genes (compact offline reference).
+    # Map var_names -> symbols so genes are human-readable, matching de_results.
+    if args.expr_matrix and rows:
+        dfh = pd.DataFrame(rows).dropna(subset=["gene"])
+        if args.expr_sig_only:
+            sel = dfh[(dfh["padj"] < 0.05) & (dfh["log2FC"].abs() > 1)]
+            gene_universe = sorted(sel["gene"].astype(str).unique())
+            gtag = "significant DE genes"
+        else:
+            gene_universe = sorted(dfh["gene"].astype(str).unique())
+            gtag = "all tested genes"
+        # de_results 'gene' values are var_names; expression matrix indexes by
+        # var_names too, then maps to symbol for the output if a symbol col exists.
+        meta_cols = [c for c in ("group", "age", "sex", "pool")
+                     if c in adata.obs.columns]
+        if gene_universe:
+            long_df, sample_meta = build_expression_matrix(
+                adata, ct_key, gene_universe, meta_cols)
+            if symbol_map:
+                long_df["gene_symbol"] = long_df["gene"].map(
+                    lambda g: symbol_map.get(g, g))
+            expr_csv = table_dir / f"de_gene_expression_per_sample{out_suffix}.csv"
+            meta_csv = table_dir / f"sample_metadata{out_suffix}.csv"
+            long_df.to_csv(expr_csv, index=False)
+            sample_meta.to_csv(meta_csv)
+            print(f"  Expression matrix: {expr_csv}")
+            print(f"    {len(gene_universe)} {gtag} × {long_df['celltype'].nunique()} "
+                  f"cell types × {sample_meta.shape[0]} samples "
+                  f"({len(long_df)} rows; long format, join to leading-edge on celltype+gene)")
+            print(f"  Sample metadata:   {meta_csv}")
+
     print(f"\n✓ Phase 8b complete.")
     print(f"\n  Reminder: pup is the unit; no dam ID (anti-conservative); n small.")
     print(f"  Trust only large effects, read 'reliability' + 'flag' + 'note' per row.\n")
