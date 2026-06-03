@@ -58,7 +58,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from _utils import load_config, add_lognorm
+from _utils import load_config, add_lognorm, phase_table_dir
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +191,21 @@ def score_marker_sets(adata, markers: dict) -> None:
 # Plots: marker / UMAP
 # ---------------------------------------------------------------------------
 
+def plot_umap_celltype(adata, celltype_key: str, out: Path) -> None:
+    """Final UMAP coloured by the chosen cell-type label column. The headline
+    figure of Phase 7 — names every cluster on the map. Legend on the right
+    (not on-data) since cell-type names are long and overlap on small clusters.
+    """
+    n = adata.obs[celltype_key].nunique()
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sc.pl.umap(adata, color=celltype_key, ax=ax, show=False, frameon=False,
+               legend_loc="right margin", legend_fontsize=7, size=6,
+               title=f"Cell-type annotation ({n} types) — {celltype_key}")
+    fig.tight_layout()
+    fig.savefig(out, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_leiden_for_reference(adata, obs_key: str, out: Path) -> None:
     n = adata.obs[obs_key].nunique()
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -289,13 +304,22 @@ def plot_marker_score_umaps(adata, markers: dict, out: Path) -> None:
 
 
 
-def assign_provisional_celltype(adata, markers: dict) -> str:
-    """Assign a provisional cell type label to each cell by taking whichever
-    curated marker score is highest. Stored in adata.obs["provisional_celltype"].
+def assign_provisional_celltype(adata, markers: dict,
+                                cluster_key: str = "leiden") -> str:
+    """Assign a provisional cell type label per CLUSTER (not per cell) by:
+      1. scoring each cell against curated marker panels (already done upstream),
+      2. taking the majority cell-type label within each Leiden cluster,
+      3. propagating that label to all cells in the cluster.
 
-    This gives real names (Microglia, Excitatory neurons, ...) for composition
-    plots even when CellTypist is not configured. Labels are explicitly marked
-    PRELIMINARY — override via annotation_summary.csv manual_annotation column.
+    Per-cluster majority voting is the field convention (CellTypist's
+    `majority_voting=True`, scANVI predictions, every snRNA-seq paper). Cells
+    in one cluster have the same transcriptional state by definition of
+    clustering, so the label shouldn't flip within a cluster. This is more
+    robust than per-cell argmax, especially when clusters are small or marker
+    scores are noisy.
+
+    Stored in adata.obs["provisional_celltype"]. Marked PRELIMINARY — override
+    via annotation_summary.csv manual_annotation column for real annotation.
 
     Returns the obs column name ("provisional_celltype").
     """
@@ -325,11 +349,37 @@ def assign_provisional_celltype(adata, markers: dict) -> str:
             f"  the composition plots meaningless."
         )
 
+    if cluster_key not in adata.obs.columns:
+        raise ValueError(
+            f"assign_provisional_celltype: '{cluster_key}' missing from .obs. "
+            f"Run Phase 6 (clustering) before annotation."
+        )
+
+    # Per-cell argmax of marker scores (intermediate, used for the vote).
     scores = adata.obs[score_cols].values          # n_cells × n_types
-    best_idx = scores.argmax(axis=1)               # index of highest score per cell
-    adata.obs["provisional_celltype"] = [ct_names[i] for i in best_idx]
+    per_cell_label = np.array([ct_names[i] for i in scores.argmax(axis=1)])
+
+    # Per-cluster majority: each cluster -> most-frequent per-cell label.
+    cluster = adata.obs[cluster_key].astype(str).values
+    cluster_label = {}
+    for c in np.unique(cluster):
+        m = cluster == c
+        vals, counts = np.unique(per_cell_label[m], return_counts=True)
+        top = vals[counts.argmax()]
+        purity = counts.max() / counts.sum()
+        cluster_label[c] = (top, purity)
+
+    adata.obs["provisional_celltype"] = pd.Categorical(
+        [cluster_label[c][0] for c in cluster])
+
     n_types = adata.obs["provisional_celltype"].nunique()
-    print(f"  Provisional cell type labels assigned: {n_types} types")
+    print(f"  Provisional cell type labels (per-cluster majority): {n_types} types")
+    # Report cluster purity — flags clusters where the vote was close (mixed signal)
+    low_purity = [(c, lab, pur) for c, (lab, pur) in cluster_label.items() if pur < 0.6]
+    if low_purity:
+        print(f"  [info] {len(low_purity)} clusters had majority <60% (mixed signal):")
+        for c, lab, pur in sorted(low_purity, key=lambda x: x[2])[:5]:
+            print(f"    cluster {c}: {lab} ({pur:.0%} majority)")
     print(f"  Distribution:")
     dist = adata.obs["provisional_celltype"].value_counts()
     for ct, n in dist.items():
@@ -502,7 +552,7 @@ def main():
 
     out_dir = Path(cfg["results_dir"]) / "h5ad" / "08_annotated"
     plot_dir = Path(cfg["results_dir"]) / "plots" / "07_annotation"
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "07_annotation")
     for d in (out_dir, plot_dir, table_dir):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -585,7 +635,7 @@ def main():
             adata.obs["celltypist_majority"]  = combined["majority_voting"].values
             adata.obs["celltypist_predicted"] = combined["predicted_labels"].values
             adata.obs["celltypist_conf_score"] = combined["conf_score"].values
-            combined.to_csv(table_dir / "celltypist_predictions.csv")
+            combined.to_csv(table_dir / "07_annotation_celltypist_predictions.csv")
             n_types = adata.obs["celltypist_majority"].nunique()
             print(f"  CellTypist complete: {n_types} distinct cell types predicted")
             dist = adata.obs["celltypist_majority"].value_counts().head(10)
@@ -598,11 +648,11 @@ def main():
     print(f"  Marker sets: {list(markers.keys())}")
     score_marker_sets(adata, markers)
     top_markers = run_marker_genes(adata, obs_key="leiden")
-    top_markers.to_csv(table_dir / "marker_genes_per_cluster.csv", index=False)
+    top_markers.to_csv(table_dir / "07_annotation_marker_genes_per_cluster.csv", index=False)
     print(f"  Top markers written: {len(top_markers)} rows")
 
     summary = build_annotation_summary(adata, top_markers)
-    summary.to_csv(table_dir / "annotation_summary.csv", index=False)
+    summary.to_csv(table_dir / "07_annotation_summary.csv", index=False)
     print(f"\n  Annotation summary:")
     print(summary.to_string(index=False))
 
@@ -630,6 +680,9 @@ def main():
     plot_umap_celltypist(adata,
                          plot_dir / "umap_celltypist.png",
                          plot_dir / "umap_celltypist_confidence.png")
+    # Headline figure: UMAP coloured by the chosen cell-type label
+    plot_umap_celltype(adata, celltype_key,
+                       plot_dir / "umap_celltype_annotation.png")
 
     # Composition diagnostics
     plot_cluster_composition_by_sample(
@@ -644,7 +697,7 @@ def main():
 
     # Composition CSV
     save_composition_table(adata, celltype_key,
-                           table_dir / "celltype_composition.csv")
+                           table_dir / "07_annotation_celltype_composition.csv")
 
     # Drop lognorm before saving (same policy as Phase 5)
     if "lognorm" in adata.layers:
@@ -664,7 +717,7 @@ def main():
     print(f"")
     print(f"  Composition plots use {celltype_key!r} labels.")
     print(f"  If labels look wrong, edit the manual_annotation column in:")
-    print(f"    {table_dir / 'annotation_summary.csv'}")
+    print(f"    {table_dir / '07_annotation_summary.csv'}")
     print(f"  Then re-run this script after transferring labels to adata.obs.")
     print(f"\nNext steps:")
     print(f"  1. Review annotation_summary.csv — correct manual_annotation where needed")

@@ -35,7 +35,7 @@ Usage:
   uv run python scripts/08c_pathways.py --config config/brain.yaml
 
 Inputs:
-  {results_dir}/tables/de_results.csv           (from 8b)
+  {results_dir}/tables/08b_de/08b_de_results.csv   (from 8b)
   {results_dir}/h5ad/08_annotated/all_samples.h5ad   (for var['symbol'] map only)
   GMT files from the YAML pathways.gmt_files (optional)
 
@@ -48,7 +48,9 @@ Outputs:
         cell-type x pathway NES heatmap, one panel per collection (shared cell-type axis)
   All panel figures scale width with the number of collections so panels stay
   full-size (no clipping); within-collection FDR throughout.
-  {results_dir}/tables/pathway_results.csv
+  {results_dir}/tables/08c_pathways/08c_pathway_results.csv
+  {results_dir}/tables/08c_pathways/08c_pathway_leading_edge.csv
+  {results_dir}/tables/08c_pathways/08c_tf_activity.csv  (with --tf or YAML run_tf_activity)
     [contrast, flag, group_level, celltype, source, collection, NES, pvalue,
      FDR(per-collection), FDR_pooled, note]
   FDR is BH-corrected WITHIN each collection (MH/M2/M5/M8) by default — keeps the
@@ -166,6 +168,52 @@ def compute_leading_edge(rank_series, members, nes):
         sub = sub[sub > 0] if nes > 0 else sub[sub < 0]
     sub = sub.reindex(sub.abs().sort_values(ascending=False).index)
     return list(zip(sub.index.tolist(), sub.values.tolist()))
+
+
+def load_collectri():
+    """Fetch CollecTRI mouse TF–target network. Version-robust.
+    Returns the network DataFrame (cols incl. source, target, weight) or None.
+    """
+    import decoupler as dc
+    if hasattr(dc, "op") and hasattr(dc.op, "collectri"):      # decoupler 2.0
+        return dc.op.collectri(organism="mouse")
+    return dc.get_collectri(organism="mouse", split_complexes=False)  # 1.9
+
+
+def run_tf_ulm(rank_series, collectri, min_targets=5):
+    """TF activity via ULM on a ranked DE-stat vector (index=gene symbol).
+
+    Same input as GSEA (the contrast's Wald stats), so TF activity and pathway
+    enrichment are directly comparable. ULM fits, per TF, a linear model of the
+    stat vector on the TF's target weights; the slope t-value is the activity
+    score (positive = TF activated in the contrast, negative = repressed).
+
+    Returns tidy DataFrame [source(TF), activity_score, pvalue] or empty.
+    Version-robust across decoupler 2.0 (dc.mt.ulm) and 1.9 (dc.run_ulm).
+    """
+    import decoupler as dc
+    mat = rank_series.to_frame().T
+    mat.index = ["contrast"]
+
+    if hasattr(dc, "mt") and hasattr(dc.mt, "ulm"):            # decoupler 2.0
+        out = dc.mt.ulm(data=mat, net=collectri, tmin=min_targets)
+        if isinstance(out, tuple):
+            est, pval = out[0], out[1]
+            return pd.DataFrame({"source": est.columns, "activity_score": est.iloc[0].values,
+                                 "pvalue": pval.iloc[0].values})
+        # AnnData-style: scores in .obsm
+        try:
+            est = dc.pp.get_obsm(out, key="score_ulm")
+            pv = dc.pp.get_obsm(out, key="padj_ulm")
+            return pd.DataFrame({"source": est.var_names, "activity_score": est.X[0],
+                                 "pvalue": pv.X[0] if pv is not None else np.nan})
+        except Exception:
+            return pd.DataFrame(columns=["source", "activity_score", "pvalue"])
+
+    # decoupler 1.9 fallback
+    acts, pvals = dc.run_ulm(mat=mat, net=collectri, min_n=min_targets)
+    return pd.DataFrame({"source": acts.columns, "activity_score": acts.iloc[0].values,
+                         "pvalue": pvals.iloc[0].values})
 
 
 def add_fdr(gsea, collection_map):
@@ -355,6 +403,92 @@ def plot_running_enrichment(rank_series, members, title, out):
     fig.savefig(out, dpi=140, bbox_inches="tight"); plt.close(fig)
 
 
+# ---------------------------------------------------------------------------
+# TF activity plots
+# ---------------------------------------------------------------------------
+
+def plot_tf_barplot(tf_df, title, out, top_n=20, fdr_thr=0.05):
+    """Top TFs by |activity| for one celltype×contrast, coloured by direction.
+
+    Shows significant TFs first (FDR<thr); if fewer than top_n are significant,
+    fills with the next-highest |activity| (greyed) so the plot isn't sparse.
+    """
+    if tf_df is None or tf_df.empty:
+        return
+    d = tf_df.dropna(subset=["activity_score"]).copy()
+    d["abs"] = d["activity_score"].abs()
+    sig = d[d["FDR"] < fdr_thr] if "FDR" in d else d
+    pick = sig.sort_values("abs", ascending=False).head(top_n)
+    if len(pick) < top_n:
+        extra = d[~d["TF"].isin(pick["TF"])].sort_values("abs", ascending=False)
+        pick = pd.concat([pick, extra.head(top_n - len(pick))])
+    pick = pick.sort_values("activity_score")
+    is_sig = (pick["FDR"] < fdr_thr) if "FDR" in pick else pd.Series(True, index=pick.index)
+    colors = ["firebrick" if (s > 0 and sg) else "steelblue" if (s < 0 and sg) else "lightgray"
+              for s, sg in zip(pick["activity_score"], is_sig)]
+    fig, ax = plt.subplots(figsize=(6, max(3, 0.32 * len(pick))))
+    ax.barh(pick["TF"].astype(str), pick["activity_score"], color=colors, edgecolor="k", lw=0.3)
+    ax.axvline(0, color="k", lw=0.6)
+    ax.set_xlabel("TF activity (ULM score)")
+    ax.set_title(f"{title}\nred=activated, blue=repressed (FDR<{fdr_thr}); grey=ns",
+                 fontsize=9)
+    fig.tight_layout(); fig.savefig(out, dpi=140, bbox_inches="tight"); plt.close(fig)
+
+
+def plot_tf_volcano(tf_df, title, out, fdr_thr=0.05, max_labels=20):
+    """TF activity score vs -log10(FDR); label top significant named TFs."""
+    if tf_df is None or tf_df.empty or "FDR" not in tf_df:
+        return
+    d = tf_df.dropna(subset=["activity_score", "FDR"]).copy()
+    if d.empty:
+        return
+    d["nlfdr"] = -np.log10(d["FDR"].clip(lower=1e-300))
+    sig = d["FDR"] < fdr_thr
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.scatter(d.loc[~sig, "activity_score"], d.loc[~sig, "nlfdr"],
+               s=8, c="lightgray", alpha=0.6)
+    ax.scatter(d.loc[sig, "activity_score"], d.loc[sig, "nlfdr"],
+               s=14, c="firebrick", alpha=0.8)
+    ax.axhline(-np.log10(fdr_thr), color="k", ls="--", lw=0.7)
+    ax.axvline(0, color="k", lw=0.5)
+    lab = d[sig].reindex(d[sig]["activity_score"].abs().sort_values(ascending=False).index).head(max_labels)
+    for _, r in lab.iterrows():
+        ax.text(r["activity_score"], r["nlfdr"], str(r["TF"]), fontsize=6)
+    ax.set_xlabel("TF activity (ULM score)"); ax.set_ylabel("-log10(FDR)")
+    extra = f" (+{int(sig.sum())-max_labels} more sig)" if sig.sum() > max_labels else ""
+    ax.set_title(f"{title}\n{int(sig.sum())} TFs at FDR<{fdr_thr}{extra}", fontsize=9)
+    fig.tight_layout(); fig.savefig(out, dpi=140, bbox_inches="tight"); plt.close(fig)
+
+
+def plot_tf_heatmap(tf_block, title, out, fdr_thr=0.05, max_tfs=40):
+    """TF × celltype heatmap of activity scores for one contrast×level.
+
+    Keeps only TFs significant (FDR<thr) in >=1 celltype; caps at max_tfs by
+    max |activity| across celltypes so the plot stays readable.
+    """
+    if tf_block is None or tf_block.empty:
+        return
+    sig_tfs = tf_block.loc[tf_block["FDR"] < fdr_thr, "TF"].unique()
+    if len(sig_tfs) == 0:
+        return
+    sub = tf_block[tf_block["TF"].isin(sig_tfs)]
+    mat = sub.pivot_table(index="TF", columns="celltype",
+                          values="activity_score", aggfunc="mean")
+    order = mat.abs().max(axis=1).sort_values(ascending=False).head(max_tfs).index
+    mat = mat.loc[order]
+    import seaborn as sns
+    fig, ax = plt.subplots(figsize=(max(5, 0.6 * mat.shape[1]),
+                                    max(4, 0.28 * mat.shape[0])))
+    vmax = np.nanmax(np.abs(mat.values)) if mat.size else 1
+    sns.heatmap(mat, ax=ax, cmap="RdBu_r", center=0, vmin=-vmax, vmax=vmax,
+                linewidths=0.3, cbar_kws={"label": "TF activity"})
+    ax.set_title(f"{title}\nTF activity (sig in ≥1 celltype, top {len(order)} by |score|)",
+                 fontsize=9)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=7)
+    plt.setp(ax.get_yticklabels(), fontsize=6)
+    fig.tight_layout(); fig.savefig(out, dpi=140, bbox_inches="tight"); plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Phase 8c: pathway/GSEA on DE results")
     ap.add_argument("--config", required=True, type=Path)
@@ -364,6 +498,11 @@ def main():
     ap.add_argument("--le-fdr", type=float, default=0.05,
                     help="FDR cutoff for which pathways get leading-edge gene rows "
                          "(default 0.05). Leading-edge written to pathway_leading_edge.csv.")
+    ap.add_argument("--tf", dest="tf", action="store_true", default=None,
+                    help="Force TF activity (CollecTRI ULM) ON, overriding YAML "
+                         "pathways.run_tf_activity. Writes 08c_tf_activity.csv.")
+    ap.add_argument("--no-tf", dest="tf", action="store_false",
+                    help="Force TF activity OFF, overriding YAML.")
     ap.add_argument("--subcluster", default=None,
                     help="Run on a 7b subcluster DE table instead of the main one. "
                          "Pass the cell-type slug (e.g. 'microglia') — reads "
@@ -377,16 +516,21 @@ def main():
     collections = pcfg.get("collections", ["MH", "M2", "M5", "M8"])
     min_genes = int(pcfg.get("min_genes_per_set", 5))
     run_tf = bool(pcfg.get("run_tf_activity", False))
+    if args.tf is not None:          # CLI overrides YAML
+        run_tf = args.tf
     use_supplement = bool(pcfg.get("use_builtin_stress_sets", False))
 
     rdir = Path(cfg["results_dir"])
+    from _utils import phase_table_dir
+    de_dir = rdir / "tables" / "08b_de"            # 8b's per-phase table dir
+    out_table_dir = phase_table_dir(cfg, "08c_pathways")
     # Main DE table, or a 7b-subcluster DE table when --subcluster is given.
     if args.subcluster:
-        de_path = rdir / "tables" / f"de_results_subcluster_{args.subcluster}.csv"
+        de_path = de_dir / f"08b_de_results_subcluster_{args.subcluster}.csv"
         out_suffix = f"_subcluster_{args.subcluster}"
         print(f"  SUBCLUSTER mode: {args.subcluster}")
     else:
-        de_path = rdir / "tables" / "de_results.csv"
+        de_path = de_dir / "08b_de_results.csv"
         out_suffix = ""
     if not de_path.is_file():
         sys.exit(f"ERROR: {de_path} not found. Run 08b_de.py"
@@ -445,7 +589,21 @@ def main():
     collection_map = dict(net.drop_duplicates("source").set_index("source")["collection"])
     n_top_running = int(pcfg.get("n_running_enrichment", 3))
 
+    # TF activity network (CollecTRI) loaded once if enabled. Fetched up front so
+    # a network failure is reported before the per-celltype loop, not mid-run.
+    collectri = None
+    if run_tf:
+        try:
+            collectri = load_collectri()
+            n_tf = collectri["source"].nunique() if "source" in collectri.columns \
+                   else collectri.iloc[:, 0].nunique()
+            print(f"  TF activity ON — CollecTRI: {n_tf} mouse TFs (ULM per celltype)")
+        except Exception as e:
+            print(f"  [warn] CollecTRI fetch failed ({e}); TF activity skipped this run.")
+            collectri = None
+
     rows = []
+    tf_rows = []   # TF activity: one row per contrast×level×celltype×TF
     le_rows = []   # leading-edge: one row per contrast×level×celltype×pathway×gene
     # Group by contrast x group_level so we can build a cross-cell-type heatmap
     # per contrast, while still emitting per-cell-type dot/volcano/mountain plots.
@@ -523,21 +681,61 @@ def main():
                         "flag": flag, "note": note,
                     })
 
+            # TF activity (CollecTRI ULM) on the same ranked DE stats.
+            if collectri is not None:
+                try:
+                    tf = run_tf_ulm(rank_series, collectri)
+                except Exception as e:
+                    print(f"  [warn] TF ULM failed for {contrast}|{level}|{ct}: {e}")
+                    tf = None
+                if tf is not None and not tf.empty:
+                    # BH-correct TF p-values within this celltype×contrast
+                    from scipy.stats import false_discovery_control
+                    pv = tf["pvalue"].astype(float).values
+                    ok = ~np.isnan(pv)
+                    fdr = np.full(len(pv), np.nan)
+                    if ok.sum() > 0:
+                        fdr[ok] = false_discovery_control(pv[ok], method="bh")
+                    tf = tf.assign(FDR=fdr)
+                    # Per-celltype TF plots (rename source->TF for the plotters)
+                    tf_plot = tf.rename(columns={"source": "TF"})
+                    plot_tf_barplot(tf_plot, f"TF activity | {ct}",
+                                    pdir / "tf_activity_barplot.png")
+                    plot_tf_volcano(tf_plot, f"TF activity | {ct}",
+                                    pdir / "tf_activity_volcano.png")
+                    for _, t in tf.iterrows():
+                        tf_rows.append({
+                            "contrast": contrast, "flag": flag, "group_level": level,
+                            "celltype": ct, "TF": t["source"],
+                            "activity_score": round(float(t["activity_score"]), 4),
+                            "pvalue": t["pvalue"],
+                            "FDR": round(float(t["FDR"]), 6) if not np.isnan(t["FDR"]) else np.nan,
+                            "direction": ("activated" if t["activity_score"] > 0 else "repressed"),
+                            "note": note,
+                        })
+
         # Cross-cell-type heatmap per contrast x level — one panel per collection.
         if per_ct:
             ldir = plot_root / str(contrast) / str(level)
             ldir.mkdir(parents=True, exist_ok=True)
             panel_heatmap_by_collection(per_ct, f"{contrast} | {level}",
                                         ldir / "celltype_pathway_heatmap_panels.png")
+            # TF activity heatmap (TF × celltype) for this contrast×level.
+            if collectri is not None and tf_rows:
+                tf_block = pd.DataFrame([r for r in tf_rows
+                                         if r["contrast"] == contrast
+                                         and r["group_level"] == level])
+                plot_tf_heatmap(tf_block, f"{contrast} | {level}",
+                                ldir / "tf_activity_heatmap.png")
 
     df_rows = pd.DataFrame(rows)
-    out_csv = rdir / "tables" / f"pathway_results{out_suffix}.csv"
+    out_csv = out_table_dir / f"08c_pathway_results{out_suffix}.csv"
     df_rows.to_csv(out_csv, index=False)
     print(f"\n  Master table: {out_csv}  ({len(rows)} rows)")
     # Per-collection sub-tables (paper-panel style)
     if not df_rows.empty:
         for coll, sub in df_rows.groupby("collection"):
-            sub_path = rdir / "tables" / f"pathway_results{out_suffix}_{_safe(str(coll))}.csv"
+            sub_path = out_table_dir / f"08c_pathway_results{out_suffix}_{_safe(str(coll))}.csv"
             sub.to_csv(sub_path, index=False)
         print(f"  Per-collection tables: pathway_results{out_suffix}_<collection>.csv "
               f"({df_rows['collection'].nunique()} collections)")
@@ -546,7 +744,7 @@ def main():
     # with log2FC magnitude + direction). One row per gene; join to the
     # 08b expression matrix on (celltype, gene) for per-sample levels.
     le_df = pd.DataFrame(le_rows)
-    le_csv = rdir / "tables" / f"pathway_leading_edge{out_suffix}.csv"
+    le_csv = out_table_dir / f"08c_pathway_leading_edge{out_suffix}.csv"
     le_df.to_csv(le_csv, index=False)
     if le_rows:
         n_paths = le_df.groupby(["contrast", "group_level", "celltype", "pathway"]).ngroups
@@ -555,23 +753,18 @@ def main():
     else:
         print(f"  Leading-edge table: {le_csv}  (empty — no pathways below FDR<{args.le_fdr})")
 
-    # Optional TF activity (CollecTRI) — needs network; guarded.
+    # TF activity table (CollecTRI ULM). Written when run_tf and rows collected.
     if run_tf:
-        print(f"\n  TF activity (CollecTRI)...")
-        try:
-            # decoupler 2.0: dc.op.collectri; 1.9: dc.get_collectri
-            if hasattr(dc, "op") and hasattr(dc.op, "collectri"):
-                collectri = dc.op.collectri(organism="mouse")
-            else:
-                collectri = dc.get_collectri(organism="mouse", split_complexes=False)
-            src_col = "source" if "source" in collectri.columns else collectri.columns[0]
-            print(f"    CollecTRI: {collectri[src_col].nunique()} TFs. "
-                  f"(per-contrast ULM TF activity wired here in a follow-up.)")
-            # NOTE: per-contrast TF activity via dc.run_ulm on the stat vector can
-            # be added once gene sets are validated; left as a deliberate stub so
-            # this run stays focused on GSEA. Not a silent skip — announced.
-        except Exception as e:
-            print(f"    [skip] CollecTRI fetch failed (network?): {e}")
+        tf_df = pd.DataFrame(tf_rows)
+        tf_csv = out_table_dir / f"08c_tf_activity{out_suffix}.csv"
+        tf_df.to_csv(tf_csv, index=False)
+        if tf_rows:
+            n_sig = int((tf_df["FDR"] < 0.05).sum())
+            print(f"  TF activity table: {tf_csv}  ({len(tf_rows)} TF rows, "
+                  f"{n_sig} at FDR<0.05)")
+        else:
+            print(f"  TF activity table: {tf_csv}  (empty — CollecTRI unavailable "
+                  f"or no TFs scored)")
 
     print(f"  Plots: {plot_root}")
     print(f"\n✓ Phase 8c complete.")

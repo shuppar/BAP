@@ -340,7 +340,7 @@ def main():
                            plot_dir / "cell_cycle_phase_bar.png")
 
     summary = combined.obs.groupby("sample_id").size().reset_index(name="n_cells")
-    summary_path = paths["tables"] / "summary_integration_prep.csv"
+    summary_path = paths["tables"] / "04_integration_prep_summary.csv"
     summary.to_csv(summary_path, index=False)
 
     print(f"\n  Summary:")

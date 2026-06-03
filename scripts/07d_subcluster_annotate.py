@@ -87,7 +87,7 @@ import pandas as pd
 import scanpy as sc
 import yaml
 
-from _utils import load_config, add_lognorm
+from _utils import load_config, add_lognorm, phase_table_dir
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +362,7 @@ def main():
                  f"  Run 07b_subcluster.py --celltype '{args.celltype}' first.")
 
     plot_dir = Path(cfg["results_dir"]) / "plots" / "07b_subcluster" / slug
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "07d_subcluster_annotate")
     plot_dir.mkdir(parents=True, exist_ok=True)
     table_dir.mkdir(parents=True, exist_ok=True)
 
@@ -480,7 +480,7 @@ def main():
         rows.append(row)
 
     ann_table = pd.DataFrame(rows)
-    ann_path = table_dir / f"subcluster_{slug}_annotation.csv"
+    ann_path = table_dir / f"07d_subcluster_{slug}_annotation.csv"
     ann_table.to_csv(ann_path, index=False)
     print(f"\n  Annotation table: {ann_path}")
 

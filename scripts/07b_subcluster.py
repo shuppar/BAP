@@ -56,7 +56,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from _utils import load_config, add_lognorm, select_accelerator
+from _utils import load_config, add_lognorm, select_accelerator, phase_table_dir
 
 
 LABEL_KEY_PRIORITY = [
@@ -164,7 +164,7 @@ def main():
     slug = slugify(args.celltype)
     out_h5ad = base / "08c_subclustered"
     plot_dir = Path(cfg["results_dir"]) / "plots" / "07b_subcluster" / slug
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "07b_subcluster")
     for d in (out_h5ad, plot_dir, table_dir):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -196,7 +196,7 @@ def main():
     print(f"\n[3/5] Neighbors + Leiden (res={args.resolution}) + UMAP...")
     n_neighbors = min(15, max(5, sub.n_obs // 100))
     sc.pp.neighbors(sub, use_rep="X_scVI_sub", n_neighbors=n_neighbors, random_state=seed)
-    sc.tl.leiden(sub, resolution=args.resolution, random_state=seed, key_added="subcluster")
+    sc.tl.leiden(sub, resolution=args.resolution, random_state=seed, key_added="subcluster", flavor="igraph", n_iterations=2, directed=False)
     sc.tl.umap(sub, random_state=seed)
     n_sub = sub.obs["subcluster"].nunique()
     print(f"  {n_sub} subclusters")
@@ -208,14 +208,14 @@ def main():
     markers = sc.get.rank_genes_groups_df(sub, group=None, key="sub_markers")
     top = (markers.sort_values("scores", ascending=False)
                   .groupby("group").head(20).reset_index(drop=True))
-    top.to_csv(table_dir / f"subcluster_{slug}_markers.csv", index=False)
+    top.to_csv(table_dir / f"07b_subcluster_{slug}_markers.csv", index=False)
 
     print(f"\n[5/5] Composition + plots...")
     # Composition: subcluster × group and × sample (counts + fractions)
     comp = pd.crosstab(sub.obs["subcluster"], sub.obs["group"])
     comp_frac = comp.div(comp.sum(axis=1), axis=0)
     comp_out = comp.add_suffix("_n").join(comp_frac.add_suffix("_frac"))
-    comp_out.to_csv(table_dir / f"subcluster_{slug}_composition.csv")
+    comp_out.to_csv(table_dir / f"07b_subcluster_{slug}_composition.csv")
 
     def umap(color, title, fname, **kw):
         if color not in sub.obs.columns:

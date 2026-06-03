@@ -238,7 +238,7 @@ def main():
     model.save(str(model_dir), overwrite=True)
     history = pd.concat({k: pd.DataFrame(v) for k, v in model.history.items()}, axis=1)
     history.columns = history.columns.droplevel(1)
-    history.to_csv(paths["tables"] / "scvi_training_history.csv", index=True)
+    history.to_csv(paths["tables"] / "05_integration_scvi_history.csv", index=True)
     plot_loss_curve(history, plot_dir / "scvi_loss_curve.png")
     print(f"  Trained: actual epochs = {len(history)}")
 

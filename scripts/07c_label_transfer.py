@@ -59,7 +59,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from _utils import load_config, add_lognorm
+from _utils import load_config, add_lognorm, phase_table_dir
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +291,7 @@ def main():
 
     out_dir = Path(cfg["results_dir"]) / "h5ad" / "08b_label_transferred"
     plot_dir = Path(cfg["results_dir"]) / "plots" / "07c_label_transfer"
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "07c_label_transfer")
     for d in (out_dir, plot_dir, table_dir):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -318,7 +318,7 @@ def main():
               f"(threshold={refcfg['threshold']})...")
         restricted_df = compute_region_restricted_types(
             ref, refcfg["labels_key"], refcfg["region_key"], refcfg["threshold"])
-        restricted_df.to_csv(table_dir / "region_restricted_celltypes.csv", index=False)
+        restricted_df.to_csv(table_dir / "07c_label_transfer_region_restricted_celltypes.csv", index=False)
         n_restricted = int(restricted_df["region_restricted"].sum())
         n_total = len(restricted_df)
         print(f"  {n_restricted}/{n_total} cell types are region-restricted "
@@ -361,7 +361,7 @@ def main():
     # --- Save ---
     print(f"\n[5/5] Writing outputs + plots...")
     cols = ["scanvi_celltype", "scanvi_conf"] + (["scanvi_region"] if do_region else [])
-    query.obs[cols].to_csv(table_dir / "scanvi_predictions.csv")
+    query.obs[cols].to_csv(table_dir / "07c_label_transfer_scanvi_predictions.csv")
 
     plot_umap(query, "scanvi_celltype", "scANVI cell type (transferred)",
               plot_dir / "umap_scanvi_celltype.png")

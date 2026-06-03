@@ -48,7 +48,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from _utils import load_config, load_contrasts
+from _utils import load_config, load_contrasts, phase_table_dir
 
 
 LABEL_KEY_PRIORITY = [
@@ -183,7 +183,7 @@ def main():
     print(f"  Input: {in_path}")
 
     plot_root = Path(cfg["results_dir"]) / "plots" / "08a_composition"
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "08a_composition")
     plot_root.mkdir(parents=True, exist_ok=True); table_dir.mkdir(parents=True, exist_ok=True)
 
     adata = sc.read_h5ad(in_path)
@@ -276,7 +276,7 @@ def main():
                     "reliability": reliability, "note": note,
                 })
 
-    out_csv = table_dir / "composition_results.csv"
+    out_csv = table_dir / "08a_composition_results.csv"
     pd.DataFrame(rows).to_csv(out_csv, index=False)
     n_sig = 0
     if rows:

@@ -54,7 +54,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from _utils import load_config, phase_paths
+from _utils import load_config, phase_paths, phase_table_dir
 
 
 RESOLUTIONS = [0.2, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0]
@@ -70,7 +70,7 @@ def run_leiden(adata, resolutions: list[float], seed: int) -> pd.DataFrame:
     rows = []
     for res in resolutions:
         key = f"leiden_r{res:.1f}".replace(".", "_")
-        sc.tl.leiden(adata, resolution=res, random_state=seed, key_added=key)
+        sc.tl.leiden(adata, resolution=res, random_state=seed, key_added=key, flavor="igraph", n_iterations=2, directed=False)
         n = adata.obs[key].nunique()
         rows.append({"resolution": res, "n_clusters": n, "obs_key": key})
         print(f"  res={res:.1f} → {n} clusters")
@@ -294,7 +294,7 @@ def main():
 
     out_dir = Path(cfg["results_dir"]) / "h5ad" / "07_clustered"
     plot_dir = Path(cfg["results_dir"]) / "plots" / "06_clustering"
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "06_clustering")
     for d in (out_dir, plot_dir, table_dir):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -328,15 +328,15 @@ def main():
     if chosen_key not in adata.obs.columns:
         print(f"  Running Leiden at resolution {chosen_res} (not in sweep)...")
         chosen_key = f"leiden_r{chosen_res:.1f}".replace(".", "_")
-        sc.tl.leiden(adata, resolution=chosen_res, random_state=seed, key_added=chosen_key)
+        sc.tl.leiden(adata, resolution=chosen_res, random_state=seed, key_added=chosen_key, flavor="igraph", n_iterations=2, directed=False)
 
     adata.obs["leiden"] = adata.obs[chosen_key].astype("category").copy()
     n_chosen = adata.obs["leiden"].nunique()
     print(f"  Clusters at chosen resolution: {n_chosen}")
 
-    resolution_df.to_csv(table_dir / "summary_clustering.csv", index=False)
+    resolution_df.to_csv(table_dir / "06_clustering_summary.csv", index=False)
     cluster_qc_table(adata, "leiden").to_csv(
-        table_dir / "cluster_qc_per_resolution.csv", index=False)
+        table_dir / "06_clustering_cluster_qc_per_resolution.csv", index=False)
 
     print(f"\n[4/4] Generating plots...")
     plot_resolution_selection(resolution_df, chosen_res, method,

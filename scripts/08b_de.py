@@ -61,7 +61,7 @@ import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
 
-from _utils import load_config, load_contrasts
+from _utils import load_config, load_contrasts, phase_table_dir
 
 
 LABEL_KEY_PRIORITY = [
@@ -307,7 +307,7 @@ def main():
     print(f"  Input: {in_path}")
 
     plot_root = Path(cfg["results_dir"]) / "plots" / ("08b_de" + out_suffix)
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "08b_de")
     plot_root.mkdir(parents=True, exist_ok=True); table_dir.mkdir(parents=True, exist_ok=True)
 
     adata = sc.read_h5ad(in_path)
@@ -424,7 +424,7 @@ def main():
                         "reliability": reliability, "note": note,
                     })
 
-    out_csv = table_dir / f"de_results{out_suffix}.csv"
+    out_csv = table_dir / f"08b_de_results{out_suffix}.csv"
     pd.DataFrame(rows).to_csv(out_csv, index=False)
     n_sig = 0
     if rows:
@@ -454,8 +454,8 @@ def main():
             if symbol_map:
                 long_df["gene_symbol"] = long_df["gene"].map(
                     lambda g: symbol_map.get(g, g))
-            expr_csv = table_dir / f"de_gene_expression_per_sample{out_suffix}.csv"
-            meta_csv = table_dir / f"sample_metadata{out_suffix}.csv"
+            expr_csv = table_dir / f"08b_de_gene_expression_per_sample{out_suffix}.csv"
+            meta_csv = table_dir / f"08b_sample_metadata{out_suffix}.csv"
             long_df.to_csv(expr_csv, index=False)
             sample_meta.to_csv(meta_csv)
             print(f"  Expression matrix: {expr_csv}")

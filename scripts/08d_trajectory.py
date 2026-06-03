@@ -81,7 +81,7 @@ import scanpy as sc
 import scipy.sparse as sp
 import scipy.stats as stats
 
-from _utils import load_config, add_lognorm
+from _utils import load_config, add_lognorm, phase_table_dir
 
 # RNA velocity is NOT used in this script.
 # 10x Flex probes target exons only — intronic/unspliced reads are not captured
@@ -206,7 +206,7 @@ def run_paga(adata, celltype_key, plot_dir, table_dir, seed):
         index=adata.obs[celltype_key].cat.categories,
         columns=adata.obs[celltype_key].cat.categories,
     )
-    conn.to_csv(table_dir / "trajectory_paga_connectivities.csv")
+    conn.to_csv(table_dir / "08d_trajectory_paga_connectivities.csv")
 
     # PAGA coloured by cell type
     fig, ax = plt.subplots(figsize=(8, 7))
@@ -367,7 +367,7 @@ def write_paga_edge_diagnostics(adata, celltype_key, conn, table_dir,
     if rows:
         df = (pd.DataFrame(rows).sort_values("connectivity", ascending=False)
               .reset_index(drop=True))
-        out = table_dir / "trajectory_paga_edge_diagnostics.csv"
+        out = table_dir / "08d_trajectory_paga_edge_diagnostics.csv"
         df.to_csv(out, index=False)
         n_amb = int(df["ambient_driven"].sum())
         print(f"    Edge diagnostics → {out} ({len(df)} edges, {n_amb} ambient-driven)")
@@ -512,7 +512,7 @@ def run_dpt(adata, celltype_key, root_name, plot_dir, table_dir):
 
     if rows:
         kw_df = pd.DataFrame(rows)
-        kw_df.to_csv(table_dir / "trajectory_dpt_group_comparison.csv", index=False)
+        kw_df.to_csv(table_dir / "08d_trajectory_dpt_group_comparison.csv", index=False)
         print(f"    DPT group comparison: {len(rows)} rows "
               f"({kw_df['lineage'].nunique()} lineages × age-levels)")
         print(kw_df[["lineage", "group_level", "kruskal_pval",
@@ -565,7 +565,7 @@ def main():
     print(f"  Tissue: {tissue}")
 
     plot_dir  = Path(cfg["results_dir"]) / "plots" / "08d_trajectory"
-    table_dir = Path(cfg["results_dir"]) / "tables"
+    table_dir = phase_table_dir(cfg, "08d_trajectory")
     plot_dir.mkdir(parents=True, exist_ok=True)
     table_dir.mkdir(parents=True, exist_ok=True)
 

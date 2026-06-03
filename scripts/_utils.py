@@ -166,7 +166,9 @@ def phase_paths(cfg: dict, phase: str) -> dict:
       - results_dir : Path  — the tissue's root (results/brain/, results/dev/, etc.)
       - h5ad        : Path  — h5ad checkpoint dir for this phase
       - plots       : Path  — plot output dir for this phase
-      - tables      : Path  — shared tables dir (across phases)
+      - tables      : Path  — PER-PHASE tables dir: results/{tissue}/tables/{NN_name}/
+                              (CSVs in here should be prefixed {NN_name}_ ; see
+                              phase_table_dir for the phases that build paths inline)
 
     Phases recognized: qc, doublets, integration_prep, integration
     (Phase 0 validation uses its own path convention — see 01_validate.py.)
@@ -177,7 +179,9 @@ def phase_paths(cfg: dict, phase: str) -> dict:
 
     results_dir = Path(cfg["results_dir"])
     plots = results_dir / "plots" / _PHASE_PLOT_SUBDIRS[phase]
-    tables = results_dir / "tables"
+    # Per-phase tables subfolder, named identically to the plot subdir
+    # (e.g. tables/02_qc/). Keeps tables grouped by phase like plots are.
+    tables = results_dir / "tables" / _PHASE_PLOT_SUBDIRS[phase]
     h5ad = results_dir / "h5ad" / _PHASE_H5AD_SUBDIRS[phase]
     h5ad.mkdir(parents=True, exist_ok=True)
     plots.mkdir(parents=True, exist_ok=True)
@@ -185,6 +189,22 @@ def phase_paths(cfg: dict, phase: str) -> dict:
 
     return {"results_dir": results_dir, "h5ad": h5ad,
             "plots": plots, "tables": tables}
+
+
+def phase_table_dir(cfg: dict, label: str) -> Path:
+    """Return (and create) a per-phase tables subfolder: results/{tissue}/tables/{label}/.
+
+    For phases that build their table paths inline rather than via phase_paths
+    (06, 07, 07b, 07c, 07d, 08a-08d). `label` is the canonical phase dir name,
+    e.g. "06_clustering", "08b_de", "08c_pathways", "08d_trajectory".
+
+    CSVs written into this dir should be prefixed with the same label, e.g.
+        phase_table_dir(cfg, "08b_de") / "08b_de_results.csv"
+    so a file is identifiable by name alone once copied out.
+    """
+    d = Path(cfg["results_dir"]) / "tables" / label
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 # ============================================================================
