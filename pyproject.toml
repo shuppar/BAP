@@ -80,6 +80,8 @@ dependencies = [
                                             # Configured to use Python methods by default;
                                             # R methods (CellChat) called as subprocesses
                                             # via scripts/ (see project doc §12).
+    "networkx>=3.0",                        # network graph plots in 08e (sender/receiver)
+    "mpl-chord-diagram>=0.4",              # chord diagram plots in 08e (CCC overview)
 
     # --- Plotting & reporting ---
     "matplotlib>=3.8",

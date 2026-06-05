@@ -7,12 +7,16 @@
 #   - BiocManager        : Bioconductor installer
 #   - scDblFinder        : doublet detection (primary, called as subprocess from Python)
 #   - edgeR              : DE cross-check (secondary)
-#   - CellChat           : cell-cell communication (called as subprocess from Python)
 #   - jsonlite           : JSON I/O for Python <-> R data exchange
 #   - Matrix             : sparse matrices (required by scDblFinder)
 #   - SingleCellExperiment : SCE object format (scDblFinder input)
 #   - DropletUtils       : 10x-format I/O on the R side
 #   - speckle / limma    : propeller composition analysis (Phase 8a)
+#   - msigdbr            : MSigDB gene sets for Phase 8c GSEA (fetch_genesets.R)
+#
+# NOTE: CellChat dropped — 8e cell-cell communication is LIANA+ in Python.
+# CellChat pulls heavy plotting transitive deps (fs, ragg, sass, ggrastr) that
+# need Ubuntu system libs not in setup-remote.sh, and we don't use it.
 #
 # All packages installed into a project-local library managed by renv,
 # so the system R installation isn't touched.
@@ -48,9 +52,10 @@ if (file.exists("renv.lock")) {
   message("[setup] Installing BiocManager...")
   install.packages("BiocManager", repos = "https://cloud.r-project.org")
 
-  # Pin Bioconductor version. 3.19 is current stable for R 4.4 as of mid-2026.
+  # Pin Bioconductor version. 3.21 is the release that supports R 4.5
+  # (R 4.5.x → Bioconductor 3.21). 3.19 is for R 4.4 and will fail on R 4.5+.
   # Update this when bumping R.
-  BIOC_VERSION <- "3.19"
+  BIOC_VERSION <- "3.21"
   BiocManager::install(version = BIOC_VERSION, ask = FALSE, update = FALSE)
 
   # -- 5. Install CRAN packages --
@@ -59,7 +64,7 @@ if (file.exists("renv.lock")) {
     "Matrix",         # sparse matrix support
     "data.table",     # fast tables
     "optparse",       # CLI parsing in R scripts
-    "remotes"         # for installing from GitHub (CellChat)
+    "msigdbr"         # MSigDB gene sets for fetch_genesets.R (Phase 8c)
   )
   message("[setup] Installing CRAN packages: ", paste(cran_packages, collapse = ", "))
   install.packages(cran_packages, repos = "https://cloud.r-project.org")
@@ -78,22 +83,38 @@ if (file.exists("renv.lock")) {
   message("[setup] Installing Bioconductor packages: ", paste(bioc_packages, collapse = ", "))
   BiocManager::install(bioc_packages, ask = FALSE, update = FALSE)
 
-  # -- 7. Install CellChat from GitHub --
-  # CellChat is not on CRAN/Bioconductor — install from the official repo.
-  message("[setup] Installing CellChat from GitHub...")
-  remotes::install_github("jinworks/CellChat", upgrade = "never")
-
-  # -- 8. Snapshot for reproducibility --
+  # -- 7. Snapshot for reproducibility --
   # Writes renv.lock with exact versions of every installed package.
   # COMMIT renv.lock TO GIT.
+  #
+  # Wrapped in tryCatch because transitive plotting deps (ragg via scater, etc.)
+  # can fail to compile if a system lib is missing. Those deps are NEVER called
+  # by our pipeline; snapshotting them is bookkeeping. If it fails, log and
+  # continue — the verification step below confirms the packages we actually
+  # use are loadable. Regenerate renv.lock manually later if needed:
+  #   Rscript -e 'renv::snapshot(prompt=FALSE)'
   message("[setup] Writing renv.lock...")
-  renv::snapshot(prompt = FALSE)
+  tryCatch(
+    renv::snapshot(prompt = FALSE),
+    error = function(e) {
+      message("[setup] WARN: renv::snapshot failed — continuing.")
+      message("[setup] Reason: ", conditionMessage(e))
+      message("[setup] Pipeline packages will be verified next; the lockfile")
+      message("[setup] is non-critical (reproducibility metadata only).")
+    }
+  )
 }
+
+# -- 8. Drop the bail-on-error handler before verify --
+# We want the verify loop to test EVERY required package and report all that
+# fail, not bail on the first one.
+options(error = NULL)
 
 # -- 9. Sanity check: load every package once to confirm it works --
 message("[setup] Verifying packages load correctly...")
-required <- c("scDblFinder", "edgeR", "CellChat", "jsonlite",
-              "SingleCellExperiment", "DropletUtils", "speckle", "limma")
+required <- c("scDblFinder", "edgeR", "jsonlite",
+              "SingleCellExperiment", "DropletUtils", "speckle", "limma",
+              "msigdbr")
 for (pkg in required) {
   ok <- suppressMessages(requireNamespace(pkg, quietly = TRUE))
   if (!ok) {

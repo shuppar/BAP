@@ -1731,6 +1731,17 @@ wheels = [
 ]
 
 [[package]]
+name = "mpl-chord-diagram"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d6/af/cb7c24e558073312c72f2f09bb384d4bd79028d3aad3698a501494f0cd4a/mpl_chord_diagram-0.4.1.zip", hash = "sha256:e19c338845eb9e8bcde2c1ad68584563fd64ce94e859f298de1a084a65a511a1", size = 18143, upload-time = "2022-12-10T14:41:04.472Z" }
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3332,6 +3343,8 @@ dependencies = [
     { name = "jupyterlab" },
     { name = "liana" },
     { name = "matplotlib" },
+    { name = "mpl-chord-diagram" },
+    { name = "networkx" },
     { name = "numpy" },
     { name = "omnipath" },
     { name = "openpyxl" },
@@ -3386,7 +3399,9 @@ requires-dist = [
     { name = "jupyterlab", specifier = ">=4.0" },
     { name = "liana", specifier = ">=1.5" },
     { name = "matplotlib", specifier = ">=3.8" },
+    { name = "mpl-chord-diagram", specifier = ">=0.4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "networkx", specifier = ">=3.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "omnipath", specifier = ">=1.0" },
     { name = "openpyxl", specifier = ">=3.1" },

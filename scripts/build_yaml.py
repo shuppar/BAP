@@ -94,13 +94,13 @@ REFERENCE_CONFIG = {
     "brain": {
         "celltypist_models": {
             "P1": "Developing_Mouse_Brain.pkl",   # only built-in mouse brain model
-            # "4W":  "<custom Allen BCA .pkl>",    # no built-in adult model
-            # "3mo": "<custom Allen BCA .pkl>",
+            "4W":  "refs/celltypist_brain_adult.pkl",   # built by prepare_brain_reference.py
+            "3mo": "refs/celltypist_brain_adult.pkl",   # same model for both adult ages
         },
         "reference": {
-            "ref_h5ad": None,                      # path to ABC Atlas reference subset
-            "labels_key": "cell_type",             # cell type column in the reference
-            "region_key": "region",                # region column → enables regional claims
+            "ref_h5ad": "refs/abc_brain_ref.h5ad",    # built by prepare_brain_reference.py
+            "labels_key": "cell_type",                 # cell type column in the reference
+            "region_key": "region",                    # region column → enables regional claims
             "region_concentration_threshold": 0.8,
         },
     },
