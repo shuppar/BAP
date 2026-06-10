@@ -287,7 +287,7 @@ samples:
   raw_h5: data/Pool2/per_sample_outs/C5/sample_raw_feature_bc_matrix.tar.gz
   age: P1
   group: Relaxed
-  sex: F
+  sex: M
   pool: Pool2
   library: Pool2
 - id: C1
@@ -337,9 +337,22 @@ pathways:
 random_seed: 42
 annotation:
   celltypist_models:
-    P1: Developing_Mouse_Brain.pkl
+    P1:
+      class: Developing_Mouse_Brain.pkl
+      subclass: null
+      region: null
+    4W:
+      class: refs/celltypist_brain_adult_class.pkl
+      subclass: refs/celltypist_brain_adult_subclass.pkl
+      region: refs/celltypist_brain_adult_region.pkl
+    3mo:
+      class: refs/celltypist_brain_adult_class.pkl
+      subclass: refs/celltypist_brain_adult_subclass.pkl
+      region: refs/celltypist_brain_adult_region.pkl
+  class_to_broad_csv: refs/abc_class_to_broad.csv
+  subclass_to_region_csv: refs/abc_subclass_to_region.csv
 reference:
-  ref_h5ad: null
+  ref_h5ad: refs/abc_brain_ref.h5ad
   labels_key: cell_type
   region_key: region
   region_concentration_threshold: 0.8

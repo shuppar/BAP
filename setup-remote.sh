@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-remote.sh — bootstrap the snRNA-seq pipeline environment on the workstation.
+# setup-remote.sh -- bootstrap the snRNA-seq pipeline environment on the workstation.
 #
 # Idempotent: safe to re-run. Skips steps already done.
 #
@@ -9,15 +9,29 @@
 #   - Network access to PyPI, CRAN, Bioconductor, GitHub, AWS S3 (no conda needed)
 #
 # What this script does:
-#   1. Installs uv (single static binary in ~/.local/bin) if not present
-#   2. Creates ./.venv via `uv sync`
-#   3. Installs abc_atlas_access from GitHub (Phase 7 brain reference)
-#   4. Installs R via apt if not present
-#   5. Installs R packages (scDblFinder, edgeR, CellChat, speckle, msigdbr, ...)
-#   6. Sets up the CellBender sidecar venv (.venv-cellbender)
-#   7. Fetches MSigDB gene sets (refs/msigdb_mouse.tsv) if not present
-#   8. Builds the brain reference (ABC atlas + CellTypist .pkl) if not present
-#   9. Prints next-step instructions
+#   1.   Installs uv (single static binary in ~/.local/bin) if not present
+#   2.   Creates ./.venv via `uv sync`
+#   2.5  Patches CellTypist's train.py to remove `multi_class='ovr'` argument
+#        (sklearn 1.7+ removed it; CellTypist still passes it -> hard crash on
+#        any LogisticRegression-based training. See ADR comment in step 2.5).
+#   3.   Installs abc_atlas_access from GitHub (Phase 7 brain reference download)
+#   4.   Installs R via apt if not present
+#   5.   Installs R packages (scDblFinder, edgeR, CellChat, speckle, msigdbr, ...)
+#   6.   Sets up the CellBender sidecar venv (.venv-cellbender)
+#        NOTE: CellBender is currently NOT used in the pipeline (skipped 2026-06-05
+#        due to an unresolved checkpoint pickle bug; see INSTRUCTIONS.md). Venv
+#        kept bootstrapped in case we revisit via Docker image or SoupX.
+#   7.   Fetches MSigDB gene sets (refs/msigdb_mouse.tsv) if not present
+#   8.   Builds the brain reference -- two sub-steps:
+#          8a. refs/abc_brain_ref.h5ad        (validated reference for Phase 7c)
+#          8b. Three CellTypist models + two mapping CSVs from
+#              scripts/train_celltypist_brain.py:
+#                refs/celltypist_brain_adult_class.pkl     (34 ABC classes)
+#                refs/celltypist_brain_adult_subclass.pkl  (~334 ABC subclasses)
+#                refs/celltypist_brain_adult_region.pkl    (~12 ABC regions)
+#                refs/abc_class_to_broad.csv
+#                refs/abc_subclass_to_region.csv
+#   9.   Prints next-step instructions
 #
 # Usage:
 #   ./setup-remote.sh                    # full setup
@@ -37,7 +51,7 @@ for arg in "$@"; do
     --skip-cellbender) SKIP_CELLBENDER=1 ;;
     --skip-references) SKIP_REFERENCES=1 ;;
     -h|--help)
-      grep '^#' "$0" | head -30
+      grep '^#' "$0" | head -50
       exit 0 ;;
     *) echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
@@ -79,6 +93,45 @@ uv sync
 log "Python venv created at $(pwd)/.venv"
 
 # ============================================================================
+# 2.5. Patch CellTypist for sklearn 1.7+ compatibility
+# ============================================================================
+# WHY: CellTypist's train.py hardcodes `multi_class='ovr'` in two
+# LogisticRegression() calls (lines 126 and 146 in celltypist 1.6.x).
+# scikit-learn 1.7 REMOVED the multi_class parameter entirely, so any call
+# to celltypist.train() with use_SGD=False crashes with:
+#   TypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'
+#
+# Dropping the argument is also semantically correct: sklearn 1.7+ uses
+# multinomial (softmax) by default, which gives properly calibrated
+# probabilities. The previous OvR sigmoid behaviour was what made
+# `celltypist_class_conf` come out bimodal at 0/1 on our first round of
+# brain training -- so this patch also fixes that downstream pain.
+#
+# This patch must be re-applied after every `uv sync` because the file lives
+# in .venv/ and uv has no concept of "vendor patches". When CellTypist ships
+# a fix upstream (or we pin sklearn<1.7), this step can be removed.
+log "Patching CellTypist for sklearn 1.7+ (remove multi_class='ovr')..."
+CELLTYPIST_TRAIN_PY=$(find ./.venv -path '*/celltypist/train.py' -type f 2>/dev/null | head -1 || true)
+if [[ -z "${CELLTYPIST_TRAIN_PY:-}" ]]; then
+  warn "  could not locate celltypist/train.py inside .venv -- skipping patch."
+  warn "  if CellTypist is meant to be installed, check uv.lock + 'uv sync' output."
+elif grep -q "multi_class = 'ovr'" "$CELLTYPIST_TRAIN_PY"; then
+  log "  found multi_class='ovr' in $CELLTYPIST_TRAIN_PY -- patching..."
+  # Two patterns: one for "multi_class = 'ovr', " mid-arglist (line 126),
+  # and one for "multi_class = 'ovr'" standalone (line 146).
+  sed -i "s/multi_class = 'ovr', //" "$CELLTYPIST_TRAIN_PY"
+  sed -i "s/multi_class = 'ovr'//" "$CELLTYPIST_TRAIN_PY"
+  if grep -q "multi_class = 'ovr'" "$CELLTYPIST_TRAIN_PY"; then
+    err "  patch incomplete -- multi_class still present. Inspect manually:"
+    err "    grep -n multi_class $CELLTYPIST_TRAIN_PY"
+    exit 1
+  fi
+  log "  patched OK."
+else
+  log "  CellTypist already patched (no multi_class refs)."
+fi
+
+# ============================================================================
 # 3. Install abc_atlas_access from GitHub (Phase 7 reference build)
 # ============================================================================
 log "Checking abc_atlas_access (Allen Brain Cell Atlas API)..."
@@ -95,7 +148,7 @@ fi
 if [[ $SKIP_R -eq 0 ]]; then
   log "Checking for R..."
   if ! command -v R >/dev/null 2>&1; then
-    log "R not found — installing via apt (requires sudo)..."
+    log "R not found -- installing via apt (requires sudo)..."
     if ! command -v sudo >/dev/null 2>&1; then
       err "sudo not available and R not installed. Install R manually, then re-run with --skip-r."
       exit 1
@@ -125,6 +178,9 @@ fi
 # ============================================================================
 # 6. Set up isolated CellBender venv
 # ============================================================================
+# NOTE: CellBender is currently NOT in the pipeline (see INSTRUCTIONS.md
+# "Isolate fragile dependency stacks"). We still bootstrap the venv here so
+# the path stays valid if we revisit via the Docker image or SoupX alternative.
 if [[ $SKIP_CELLBENDER -eq 0 ]]; then
   log "Setting up isolated CellBender venv..."
   if [[ ! -d ".venv-cellbender" ]]; then
@@ -135,19 +191,19 @@ if [[ $SKIP_CELLBENDER -eq 0 ]]; then
   uv pip install --python .venv-cellbender/bin/python \
     cellbender \
     "torch>=2.0,<2.5"
-  log "CellBender venv ready."
+  log "CellBender venv ready (currently unused by pipeline -- see INSTRUCTIONS.md)."
 else
   log "Skipping CellBender venv (--skip-cellbender given)"
 fi
 
 # ============================================================================
-# 7. Fetch MSigDB gene sets (one-time, ~1 min) — Phase 8c GSEA + leading-edge
+# 7. Fetch MSigDB gene sets (one-time, ~1 min) -- Phase 8c GSEA + leading-edge
 # ============================================================================
 if [[ $SKIP_REFERENCES -eq 0 && $SKIP_R -eq 0 ]]; then
   if [[ -f "refs/msigdb_mouse.tsv" ]]; then
-    log "refs/msigdb_mouse.tsv already present — skipping fetch."
+    log "refs/msigdb_mouse.tsv already present -- skipping fetch."
   else
-    log "Fetching MSigDB mouse gene sets → refs/msigdb_mouse.tsv ..."
+    log "Fetching MSigDB mouse gene sets -> refs/msigdb_mouse.tsv ..."
     mkdir -p refs
     Rscript scripts/fetch_genesets.R --out refs/msigdb_mouse.tsv
     log "MSigDB gene sets ready."
@@ -155,18 +211,60 @@ if [[ $SKIP_REFERENCES -eq 0 && $SKIP_R -eq 0 ]]; then
 fi
 
 # ============================================================================
-# 8. Build brain reference (ABC atlas + CellTypist .pkl) — Phase 7 + 7c
+# 8. Build brain reference (ABC atlas h5ad + three CellTypist models)
 # ============================================================================
-# This is the long step: ~tens of GB downloaded from AWS S3, then ~30 min
-# CellTypist training. Idempotent — skipped if outputs exist. Run in tmux.
+# 8a. Validated reference h5ad with obs columns: class, subclass,
+#     anatomical_division_label. Produced by scripts/prepare_brain_reference.py
+#     (downloads ABC WMB-10Xv3 + joins per-cell metadata + writes
+#     refs/abc_brain_ref.h5ad). LONG step: ~tens of GB downloaded from AWS S3.
+# 8b. Three CellTypist models + two mapping CSVs from
+#     scripts/train_celltypist_brain.py:
+#       - class    (34 ABC classes)         ~20-40 min
+#       - subclass (~334 ABC subclasses)    ~45-90 min
+#       - region   (~12 ABC regions)        ~10-20 min
+#       - abc_class_to_broad.csv            (instant)
+#       - abc_subclass_to_region.csv        (instant)
+#     Idempotent: skips any output that already exists. Use --force on the
+#     script to rebuild from scratch.
 if [[ $SKIP_REFERENCES -eq 0 ]]; then
-  if [[ -f "refs/abc_brain_ref.h5ad" && -f "refs/celltypist_brain_adult.pkl" ]]; then
-    log "Brain reference outputs already exist — skipping build."
+  log "=== Step 8a: brain reference h5ad ==="
+  if [[ -f "refs/abc_brain_ref.h5ad" ]]; then
+    log "refs/abc_brain_ref.h5ad already present -- skipping ABC download."
   else
-    log "Building brain reference from ABC atlas (LONG step, run in tmux)..."
-    log "  This downloads ~tens of GB and trains a CellTypist model."
-    log "  Outputs: refs/abc_brain_ref.h5ad + refs/celltypist_brain_adult.pkl"
+    log "Building refs/abc_brain_ref.h5ad from ABC atlas (LONG step, run in tmux)..."
+    log "  This downloads ~tens of GB from AWS S3."
     uv run python scripts/prepare_brain_reference.py
+  fi
+
+  log "=== Step 8b: CellTypist brain models (class/subclass/region) ==="
+  brain_outputs=(
+    refs/celltypist_brain_adult_class.pkl
+    refs/celltypist_brain_adult_subclass.pkl
+    refs/celltypist_brain_adult_region.pkl
+    refs/abc_class_to_broad.csv
+    refs/abc_subclass_to_region.csv
+  )
+  missing=0
+  for f in "${brain_outputs[@]}"; do
+    if [[ ! -f "$f" ]]; then
+      missing=1
+      log "  missing: $f"
+    fi
+  done
+  if [[ $missing -eq 1 ]]; then
+    if [[ ! -f "refs/abc_brain_ref.h5ad" ]]; then
+      warn "refs/abc_brain_ref.h5ad is missing -- step 8b skipped."
+      warn "  Re-run setup-remote.sh after the reference download completes."
+    else
+      log "Training CellTypist brain models (~1.5-2.5 hours total on WS)..."
+      log "  Run in tmux if you intend to disconnect:"
+      log "    tmux new -s train 'uv run python -u scripts/train_celltypist_brain.py --config config/brain.yaml 2>&1 | tee logs/train_celltypist_brain.log'"
+      log "  Running inline now (will block this script until done)..."
+      uv run python -u scripts/train_celltypist_brain.py --config config/brain.yaml
+    fi
+  else
+    log "All CellTypist brain outputs present -- skipping training."
+    log "  To rebuild: uv run python scripts/train_celltypist_brain.py --config config/brain.yaml --force"
   fi
 else
   log "Skipping reference build (--skip-references given)"
@@ -181,14 +279,25 @@ log "Environment setup complete."
 log "=========================================="
 log ""
 log "What got created:"
-log "  ./.venv/                            — main Python env (scanpy, scvi-tools, ...)"
-log "  ./.venv-cellbender/                 — isolated CellBender env"
-log "  ./.renv-cache/                      — R package library (project-local)"
-log "  ./renv.lock                         — R lock file (COMMIT TO GIT)"
-log "  ./uv.lock                           — Python lock file (COMMIT TO GIT)"
-log "  ./refs/msigdb_mouse.tsv             — Phase 8c pathway gene sets"
-log "  ./refs/abc_brain_ref.h5ad           — Phase 7c scANVI reference (brain)"
-log "  ./refs/celltypist_brain_adult.pkl   — Phase 7 CellTypist model (4W + 3mo brain)"
+log "  ./.venv/                                       -- main Python env (scanpy, scvi-tools, celltypist, ...)"
+log "  ./.venv-cellbender/                            -- isolated CellBender env (currently unused)"
+log "  ./.renv-cache/                                 -- R package library (project-local)"
+log "  ./renv.lock                                    -- R lock file (COMMIT TO GIT)"
+log "  ./uv.lock                                      -- Python lock file (COMMIT TO GIT)"
+log "  ./refs/msigdb_mouse.tsv                        -- Phase 8c pathway gene sets"
+log "  ./refs/abc_brain_ref.h5ad                      -- Phase 7c scANVI reference (brain)"
+log "  ./refs/celltypist_brain_adult_class.pkl        -- Phase 7 class model (34 ABC classes)"
+log "  ./refs/celltypist_brain_adult_subclass.pkl     -- Phase 7 subclass model (~334)"
+log "  ./refs/celltypist_brain_adult_region.pkl       -- Phase 7 region model (~12)"
+log "  ./refs/abc_class_to_broad.csv                  -- deterministic class -> broad map"
+log "  ./refs/abc_subclass_to_region.csv              -- subclass -> region majority (informational)"
+log ""
+log "Tech debt / known issues:"
+log "  - The sklearn 1.7+ CellTypist patch (step 2.5) lives in .venv/ and is"
+log "    re-applied on every setup-remote.sh run. If you ever 'uv sync' WITHOUT"
+log "    re-running setup-remote.sh, the patch will be silently reverted and"
+log "    LogisticRegression-based CellTypist training will crash again."
+log "    Long-term fix: pin sklearn<1.7 in pyproject.toml or wait for upstream."
 log ""
 log "Next steps:"
 log "  1. Add ~/.local/bin to PATH in ~/.bashrc (if uv was installed fresh)"

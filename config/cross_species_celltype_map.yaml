@@ -1,50 +1,68 @@
 # cross_species_celltype_map.yaml — mouse → human cell-type mapping for
 # Phase 9 cross-species RRHO2 validation.
 #
-# Each human dataset uses its own cell-type taxonomy (Velmeshev's L2/3, Nagy's
-# Ex1-Ex8, etc.). This file declares which human labels correspond to each
-# mouse focal cell type. Phase 9 reads this and runs RRHO2 between mouse
-# pseudobulk-DE for the canonical type and the union of human pseudobulk-DE
-# for the listed human labels.
+# Each human dataset uses its own cell-type taxonomy. This file declares which
+# human labels correspond to each mouse focal cell type. Phase 9 reads this
+# and runs RRHO2 between mouse pseudobulk-DE for the canonical type and the
+# union of human pseudobulk-DE for the listed human labels.
 #
-# Convention: the mouse names match `cell_type` values produced by
-# 07_annotation.py (per-cluster majority voting over CellTypist labels).
-# Human labels are filled in PER DATASET as you actually load each one — the
-# stubs here use the names reported in the published papers / metadata.
+# Two scientific arms, each a separate question and reported separately:
 #
-# After downloading data, run scripts/preview_human_dataset.py <dir> (TBW) to
-# print the unique cell-type labels in each dataset, then update this file.
+#   ARM A — Psychiatric / neurodevelopmental (MDD, autism, developmental PFC)
+#     Nagy 2020 (GSE144136), Maitra 2023 (GSE213982),
+#     Velmeshev 2019 (UCSC autism), Herring 2022 (GSE168408),
+#     Marsh 2022 (GSE198373, placenta).
+#     Question: does prenatal stress signature converge with psychiatric
+#     disease cell-type signatures?
+#
+#   ARM B — MS as stressed-cell signature reference (NOT etiology)
+#     Macnair 2025 (Zenodo 8338963), Absinta 2021 (GSE180759),
+#     Jäkel 2019 (GSE118257).
+#     Question: does prenatal stress signature converge with disease-associated
+#     microglia (MIMS-foamy, MIMS-iron, DAM-like) and stressed oligodendrocyte
+#     states (Jäkel Oligo5/Oligo6)?
+#     CRITICAL: this is NOT a claim that prenatal stress causes MS. Norwegian
+#     and Danish/Swedish registry data implicate maternal metabolic,
+#     nutritional, and exposure variables (LGA, diabetes, smoking, low vitD)
+#     rather than psychological stress per se. The MS arm tests for shared
+#     stressed-glia transcriptional programs, nothing more.
+#
+# Convention: mouse names match `cell_type` values produced by 07_annotation.py.
+# Human labels filled in per dataset using the names reported in the published
+# papers / metadata. Verify against actual meta.tsv files before running Phase 9.
 #
 # Caveats:
 #   - 1:many is fine (one mouse type → many human subtypes pooled).
-#   - leave a list empty (`[]`) to skip that cell type in that dataset.
-#   - if a label spans BOTH excitatory and inhibitory in a dataset (rare),
-#     put it under whichever the paper assigns it to.
+#   - Leave list empty (`[]`) to skip that cell type in that dataset.
+#   - Per Thrupp 2020 (Cell Rep): snRNA-seq under-detects microglial activation
+#     genes vs scRNA-seq. Macnair Micro_C-E and Absinta MIMS-* are still the
+#     best snRNA-seq reference but expect attenuated activation signal.
 
-# ----------------------------------------------------------------------------
-# BRAIN — focal cell types from 07_annotation.py
-# ----------------------------------------------------------------------------
+# ============================================================================
+# BRAIN — ARM A (psychiatric/neurodevelopmental)
+# ============================================================================
 brain:
 
   # ---- Excitatory neurons ----
   "Excitatory neurons":
     nagy_2020_GSE144136:
-      # Nagy 2020 uses Ex1..Ex8 by laminar identity; pool them.
-      # UNVERIFIED label list — confirm against the GSE144136 cell metadata.
       labels: [Ex1, Ex2, Ex3, Ex4, Ex5, Ex6, Ex7, Ex8]
     maitra_2023_GSE213982:
-      # Maitra 2023 uses ExN<NUM>_L<LAYER> naming (e.g. ExN10_L46).
-      # Filled by pattern after data lands; for now match anything starting "ExN".
       labels_pattern: "^ExN"
     velmeshev_2019_autism:
-      # Velmeshev 2019 uses laminar labels.
       labels: ["L2/3", "L4", "L5/6", "L5/6-CC", "Neu-NRGN-I", "Neu-NRGN-II", "Neu-mat"]
     herring_2022_GSE168408:
-      # Herring 2022 uses BICCN-style labels (L2-3_CUX2, L4_RORB, etc.).
-      # Confirm against the Lister-lab portal labels after download.
       labels_pattern: "^L[2-6]"
+    # MS arm — Schirmer 2019 showed selective CUX2+ L2/3 vulnerability; not
+    # in our current MS dataset list. Macnair/Absinta/Jäkel are glia-focused.
+    macnair_2025_zenodo8338963:
+      labels_pattern: "^(EN|Ex|Neu_E)"
+    absinta_2021_GSE180759:
+      labels_pattern: "^(EN|Ex)"
+    jakel_2019_GSE118257:
+      labels: []   # Jäkel WM dataset — neurons largely absent
     marsh_2022_GSE198373:
-      labels: []   # placenta dataset — no neurons
+      labels: []
 
   # ---- Inhibitory neurons ----
   "Inhibitory neurons":
@@ -53,30 +71,71 @@ brain:
     maitra_2023_GSE213982:
       labels_pattern: "^InN"
     velmeshev_2019_autism:
-      # Major interneuron classes — PV, SST, VIP, SV2C
       labels: ["IN-PV", "IN-SST", "IN-VIP", "IN-SV2C"]
     herring_2022_GSE168408:
       labels_pattern: "^(PV|SST|VIP|LAMP5|ID2|Pvalb|Sst|Vip)"
+    macnair_2025_zenodo8338963:
+      labels_pattern: "^(IN|Inh|Neu_I)"
+    absinta_2021_GSE180759:
+      labels_pattern: "^(IN|Inh)"
+    jakel_2019_GSE118257:
+      labels: []
     marsh_2022_GSE198373:
       labels: []
 
-  # ---- Microglia ----
-  # The single highest-priority cell type per the validation doc:
-  # Maitra 2023 Mic1 = 38% of female-MDD DEGs.
+  # ============================================================
+  # MICROGLIA — primary cell type for both ARM A and ARM B
+  # Maitra Mic1 = 38% of female-MDD DEGs (ARM A high-priority)
+  # MIMS-foamy/iron + Macnair Micro_C-E = ARM B core comparison
+  # ============================================================
   "Microglia":
+    # --- ARM A ---
     nagy_2020_GSE144136:
-      labels: ["Mix_5"]   # the microglia cluster in Nagy 2020 was labeled Mix_5 — confirm
+      labels: ["Mix_5"]   # verify against GSE144136 cell metadata
     maitra_2023_GSE213982:
-      labels: ["Mic1", "Mic2"]   # Mic1 = the major MDD-relevant cluster
+      labels: ["Mic1", "Mic2"]   # Mic1 = major MDD-relevant cluster
     velmeshev_2019_autism:
       labels: ["Microglia"]
     herring_2022_GSE168408:
       labels: ["Microglia"]
     marsh_2022_GSE198373:
       labels: []
+    # --- ARM B — MS arm. POOL homeostatic + reactive when computing DE for
+    #     RRHO2 against the mouse pseudobulk. Subset-specific RRHO can also
+    #     be done in a follow-up (Macnair Micro_C-E vs mouse stress signature). ---
+    macnair_2025_zenodo8338963:
+      # Macnair labels per Neuron 2025 Fig 1: Micro_A-E + PVM
+      # A,B = homeostatic (P2RY12+, CXCR1+)
+      # C   = stress/chaperone (HSPA6, HIF1A)
+      # D   = GPNMB/MITF (DAM-like)
+      # E   = IL1B/CCL3 (inflammatory)
+      labels: [Micro_A, Micro_B, Micro_C, Micro_D, Micro_E]
+      # For ARM B subtype-specific RRHO (paper-quality), use the
+      # `subset_labels` block in the Phase 9 loader (TODO).
+      subset_labels:
+        homeostatic: [Micro_A, Micro_B]
+        stress_chaperone: [Micro_C]
+        DAM_like: [Micro_D]
+        inflammatory: [Micro_E]
+    absinta_2021_GSE180759:
+      # Absinta labels per Nature 2021 Fig 1: Microglia + MIMS-iron + MIMS-foamy
+      # + Surveilling-Hom + Surveilling-Stress + Phagoc + Border-assoc
+      labels: [Microglia, MIMS-iron, MIMS-foamy, Surveilling-Hom, Surveilling-Stress, Phagocytosing]
+      subset_labels:
+        MIMS_iron: [MIMS-iron]
+        MIMS_foamy: [MIMS-foamy]
+        homeostatic: [Surveilling-Hom, Microglia]
+        stressed: [Surveilling-Stress]
+    jakel_2019_GSE118257:
+      # Jäkel labels: Microglia_Macrophages cluster (single)
+      labels: [Microglia_Macrophages]
 
-  # ---- Oligodendrocytes ----
+  # ============================================================
+  # OLIGODENDROCYTES — primary cell type for ARM B
+  # Jäkel Oligo5/Oligo6 = disease-associated mature OL subtypes (key ARM B)
+  # ============================================================
   "Oligodendrocytes":
+    # --- ARM A ---
     nagy_2020_GSE144136:
       labels: ["Oli", "Oli1", "Oli2"]
     maitra_2023_GSE213982:
@@ -87,9 +146,36 @@ brain:
       labels_pattern: "^(Oli|MOL|MFOL)"
     marsh_2022_GSE198373:
       labels: []
+    # --- ARM B — MS arm. Jäkel Oligo5/Oligo6 are the headline disease-
+    #     associated OL subtypes. ---
+    macnair_2025_zenodo8338963:
+      # Macnair Oligo_A-F (Fig 1); homeostatic→stressed gradient
+      labels_pattern: "^Oligo"
+      subset_labels:
+        # Macnair shows OPALIN+ vs RBFOX1+ vs stressed; exact subset names
+        # filled after inspecting cell metadata in the downloaded data
+        homeostatic: []   # fill after data inspection
+        stressed: []
+    absinta_2021_GSE180759:
+      # Absinta OL labels: Oligo + Oligo-Disease + Oligo-Stress
+      labels_pattern: "^Oligo"
+      subset_labels:
+        disease: [Oligo-Disease]
+        stressed: [Oligo-Stress]
+    jakel_2019_GSE118257:
+      # Jäkel Oligo1-Oligo6 from Nature 2019 Fig 1
+      # Oligo1 = homeostatic CTRL-enriched
+      # Oligo5, Oligo6 = MS-enriched disease-associated OL ← KEY for ARM B
+      labels: [Oligo1, Oligo2, Oligo3, Oligo4, Oligo5, Oligo6]
+      subset_labels:
+        homeostatic: [Oligo1, Oligo2, Oligo3, Oligo4]
+        disease_associated: [Oligo5, Oligo6]   # paper-quality comparison
 
-  # ---- OPC ----
+  # ============================================================
+  # OPC — secondary cell type for ARM B
+  # ============================================================
   "OPC":
+    # --- ARM A ---
     nagy_2020_GSE144136:
       labels: ["OPC"]
     maitra_2023_GSE213982:
@@ -100,36 +186,48 @@ brain:
       labels_pattern: "^OPC"
     marsh_2022_GSE198373:
       labels: []
+    # --- ARM B ---
+    macnair_2025_zenodo8338963:
+      labels: ["OPC", "OPC_A", "OPC_B"]   # verify exact subset names
+    absinta_2021_GSE180759:
+      labels: ["OPC"]
+    jakel_2019_GSE118257:
+      labels: ["OPCs"]   # Jäkel uses "OPCs" plural
 
-  # ---- Astrocytes ----
+  # ---- Astrocytes (both arms) ----
   "Astrocytes":
     nagy_2020_GSE144136:
       labels: ["Ast", "Ast1", "Ast2"]
     maitra_2023_GSE213982:
       labels_pattern: "^Ast"
     velmeshev_2019_autism:
-      labels: ["AST-FB", "AST-PP"]   # fibrous + protoplasmic
+      labels: ["AST-FB", "AST-PP"]
     herring_2022_GSE168408:
       labels_pattern: "^(Ast|Astrocyte)"
+    macnair_2025_zenodo8338963:
+      labels_pattern: "^(Astro|AS)"
+      subset_labels:
+        # Absinta AIMS-like signature applies to MS-associated astrocytes too
+        AIMS_like: []   # fill after data inspection
+    absinta_2021_GSE180759:
+      # Absinta AIMS = Astrocytes Inflamed in MS (Fig 3)
+      labels: [Astrocytes, AIMS]
+      subset_labels:
+        AIMS: [AIMS]
+    jakel_2019_GSE118257:
+      labels: [Astrocytes]
     marsh_2022_GSE198373:
       labels: []
 
 
-# ----------------------------------------------------------------------------
-# PLACENTA — focal cell types
-# ----------------------------------------------------------------------------
-# Cross-species placenta mapping is harder per the validation doc (mouse and
-# human trophoblast biology diverge; hemochorial structure similar but EVT
-# subtypes, invasion depth, syncytialization differ). Expect lower transfer
-# confidence than brain. Start broad; refine after seeing Marsh 2022 labels.
+# ============================================================================
+# PLACENTA — Marsh 2022 only (no MS-relevant placenta data)
+# ============================================================================
 placenta:
 
-  # Mouse "Trophoblast" maps to many human subtypes — CTB (cytotrophoblast),
-  # EVT (extravillous), STB (syncytiotrophoblast). Pool for the first pass.
   "Trophoblast":
     marsh_2022_GSE198373:
       labels_pattern: "^(CTB|STB|EVT|VCT|SCT|trophoblast)"
-    # Vento-Tormo 2018 + ECHO-PATHWAYS — fill after download / dbGaP approval.
     vento_tormo_2018: {labels: []}
 
   "EVT":
@@ -138,9 +236,9 @@ placenta:
 
   "Decidual":
     marsh_2022_GSE198373:
-      labels: []   # Marsh 2022 is fetal-side villus + chorion only
+      labels: []
     vento_tormo_2018:
-      labels_pattern: "^(dS|dP|dM|Decid)"   # decidual stromal/perivascular/macrophage
+      labels_pattern: "^(dS|dP|dM|Decid)"
 
   "Endothelial":
     marsh_2022_GSE198373:

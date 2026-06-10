@@ -92,21 +92,58 @@ SHARED_CONFIG = {
 
 REFERENCE_CONFIG = {
     "brain": {
+        # Three-tier CellTypist (Phase 7), per age:
+        #   class    -> canonical per-(cluster x age) label (celltypist_class),
+        #               assigned by majority vote of per-cell class predictions
+        #               WITHIN each (Phase 6 Leiden cluster x age) group.
+        #   subclass -> kept PER-CELL (celltypist_subclass); consumed at the
+        #               subcluster level by 7b/7d.
+        #   region   -> kept PER-CELL (celltypist_region); used at Phase 9 for
+        #               regional matching to human datasets (e.g. mouse Isocortex
+        #               cells vs human dlPFC). Per-cell from a model = context-
+        #               aware, unlike abc_subclass_to_region.csv which buries
+        #               cross-regional subclasses (cortical interneurons) in
+        #               `multi_region`.
+        # P1 uses the built-in developing-brain model and has NO adult-subclass
+        # or region model (regions aren't well-defined in the developing brain).
+        # 4W/3mo share the ABC-trained pkls written by train_celltypist_brain.py.
         "celltypist_models": {
-            "P1": "Developing_Mouse_Brain.pkl",   # only built-in mouse brain model
-            "4W":  "refs/celltypist_brain_adult.pkl",   # built by prepare_brain_reference.py
-            "3mo": "refs/celltypist_brain_adult.pkl",   # same model for both adult ages
+            "P1":  {"class": "Developing_Mouse_Brain.pkl",                    # built-in (Di Bella 2021)
+                    "subclass": None,                                         # no adult subclass at P1
+                    "region": None},                                          # regions not meaningful at P1
+            "4W":  {"class": "refs/celltypist_brain_adult_class.pkl",         # ABC WMB-10Xv3 class (34)
+                    "subclass": "refs/celltypist_brain_adult_subclass.pkl",   # ABC subclass (~334)
+                    "region": "refs/celltypist_brain_adult_region.pkl"},      # ABC anatomical_division_label (~12)
+            "3mo": {"class": "refs/celltypist_brain_adult_class.pkl",
+                    "subclass": "refs/celltypist_brain_adult_subclass.pkl",
+                    "region": "refs/celltypist_brain_adult_region.pkl"},
         },
+        # Deterministic maps emitted by train_celltypist_brain.py. Carried here
+        # but NOT applied at Phase 7 — broad is derived only when needed
+        # (Phase 9 cross-species). class->broad covers ABC adult classes
+        # (4W/3mo); P1's Di Bella labels need a separate broad map if Phase 9
+        # wants P1 included. The subclass->region CSV is now informational
+        # only — per-cell region comes from the region model.
+        "class_to_broad_csv":     "refs/abc_class_to_broad.csv",
+        "subclass_to_region_csv": "refs/abc_subclass_to_region.csv",
         "reference": {
-            "ref_h5ad": "refs/abc_brain_ref.h5ad",    # built by prepare_brain_reference.py
-            "labels_key": "cell_type",                 # cell type column in the reference
-            "region_key": "region",                    # region column → enables regional claims
+            "ref_h5ad": "refs/abc_brain_ref.h5ad",       # ABC atlas subset for scANVI (Phase 7c)
+            "labels_key": "cell_type",                   # cell type column in the reference
+            "region_key": "region",                      # region column → enables regional claims
             "region_concentration_threshold": 0.8,
         },
     },
     "placenta": {
-        # No built-in CellTypist placenta model; supply a custom .pkl if available.
+        # No built-in CellTypist placenta model. Primary track is STAMP
+        # reference-based Spearman correlation (Liu et al. 2024 eLife) —
+        # see scripts/build_placenta_reference.py for the .h5 reference.
         "celltypist_models": {},
+        "stamp": {
+            "reference":           "refs/stamp/stamp_ref_allcells.h5",
+            "gap_threshold":       0.05,   # per-cell low-confidence threshold
+            "purity_threshold":    0.5,    # per-cluster low-purity threshold
+            "min_cluster_size":    50,     # clusters smaller -> 'under_populated'
+        },
         "reference": {
             "ref_h5ad": None,                      # path to a placenta reference (if any)
             "labels_key": "cell_type",
@@ -117,14 +154,42 @@ REFERENCE_CONFIG = {
 }
 
 
+
+def load_markers_yaml(tissue, config_dir="config"):
+    """Merge config/{tissue}_markers.yaml into the annotation block if present.
+
+    Expected structure in the marker file:
+        annotation:
+          markers:
+            "Cell type A": [GeneA, GeneB, ...]
+    Returns the markers dict (empty if file absent). Keeps marker source files
+    out of build_yaml.py itself — they live in config/ and survive regen.
+    """
+    from pathlib import Path as _P
+    import yaml as _yaml
+    mp = _P(config_dir) / f"{tissue}_markers.yaml"
+    if not mp.exists():
+        return {}
+    doc = _yaml.safe_load(mp.read_text())
+    return (doc.get("annotation", {}) or {}).get("markers", {}) or {}
+
+
 def build_sample_entry(row: pd.Series) -> dict:
     """Convert one CSV row into one sample dict for the YAML.
 
-    The sex field is normalized: 'TBD' -> 'unknown' (will be inferred in Phase 0).
+    Sex field precedence: `assigned_sex` (written by Phase 0 from Y-score
+    + Xist ambiguity rule) overrides `sex_declared`. `assigned_sex` is the
+    source of truth for downstream covariates — see INSTRUCTIONS.md.
+    Falls back to sex_declared (with TBD → unknown) if assigned_sex is
+    missing (e.g. before Phase 0 has run).
     """
-    sex = row["sex_declared"]
-    if sex == "TBD":
-        sex = "unknown"
+    assigned = row.get("assigned_sex") if "assigned_sex" in row.index else None
+    if pd.notna(assigned) and str(assigned).strip() != "":
+        sex = str(assigned)
+    else:
+        sex = row["sex_declared"]
+        if sex == "TBD":
+            sex = "unknown"
     return {
         "id": row["sample_id"],
         "donor_id": row["donor_id"],
@@ -249,9 +314,29 @@ def build_yaml_for_tissue(df: pd.DataFrame, tissue: str) -> dict:
     # Per-tissue annotation + reference config (Phase 7 / 7c).
     ref = REFERENCE_CONFIG.get(tissue, {})
     if "celltypist_models" in ref:
-        cfg["annotation"] = {"celltypist_models": ref["celltypist_models"]}
+        annotation = {"celltypist_models": ref["celltypist_models"]}
+        # Carry the deterministic mapping CSVs if declared (brain two-tier).
+        for k in ("class_to_broad_csv", "subclass_to_region_csv"):
+            if k in ref:
+                annotation[k] = ref[k]
+        cfg["annotation"] = annotation
+    # Placenta STAMP primary track — flatten the stamp block into annotation
+    # under the keys that 07_annotation.py reads (stamp_reference, etc.).
+    if "stamp" in ref:
+        stamp = ref["stamp"]
+        ann = cfg.setdefault("annotation", {})
+        ann["stamp_reference"]        = stamp.get("reference")
+        ann["stamp_gap_threshold"]    = stamp.get("gap_threshold", 0.05)
+        ann["stamp_purity_threshold"] = stamp.get("purity_threshold", 0.5)
+        ann["stamp_min_cluster_size"] = stamp.get("min_cluster_size", 50)
     if "reference" in ref:
         cfg["reference"] = ref["reference"]
+    # Merge curated marker sets from config/{tissue}_markers.yaml if present.
+    # Survives regen — marker source files live in config/, never overwritten.
+    markers = load_markers_yaml(tissue)
+    if markers:
+        cfg.setdefault("annotation", {})["markers"] = markers
+        print(f"  [{tissue}] merged {len(markers)} marker sets from config/{tissue}_markers.yaml")
     # Declarative contrast spec (Phase 8).
     if tissue in CONTRASTS:
         cfg["contrasts"] = CONTRASTS[tissue]

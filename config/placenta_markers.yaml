@@ -1,0 +1,306 @@
+# placenta_markers.yaml — curated mouse placenta cell-type markers for Phase 7.
+#
+# Source: placenta_markers_E12_E18.csv, assembled from Marsh & Blelloch 2020
+# (eLife 9:e60266), Simmons 2007/2008, Screen & Hemberger 2008, Han 2024,
+# Thomas 2021, Filipovic 2018, Freyer 2022, He 2021, Cinkornpumin 2024, and
+# others (see comments per cell type in the CSV).
+#
+# Usage: Phase 7 reads `annotation.markers` from the tissue YAML. Pasted into
+# placenta.yaml under `annotation:` to override the script's built-in
+# PLACENTA_MARKERS dict.
+#
+# Schema: cell_type -> list of marker gene symbols. Mouse symbols (MGI).
+#
+# Coverage:
+#   - E12.5 (mid-gestation, Marsh territory): all 25 cell types relevant
+#   - E18.5 (late-gestation): EPC/TSC/JZP/primitive erythroblast absent;
+#     definitive erythroblast/PAMM/Hofbauer dominate
+#
+# Notes:
+#   - Tpbpa is shared across SpT/GlyT/JZP/SpA-TGC/P-TGC — combinations needed
+#     to disambiguate (handled by per-cluster majority voting in the script)
+#   - Maternal vs fetal endothelium differ only by Xist — flag for downstream
+#   - Definitive erythroblast: C57BL/6 = Hbb-bs / Hbb-bt (NOT Hbb-b1 / Hbb-b2,
+#     which is BALB/c or 129); confirm your strain
+#   - EPC/TSC should NOT appear in either age — positive score = QC flag
+
+annotation:
+  markers:
+
+    # ============================================================
+    # LABYRINTH compartment
+    # ============================================================
+    "Labyrinth trophoblast progenitor (LaTP)":
+      - Epcam
+      - Met
+      - Tfap2c
+      - Hand1
+      - Hes1
+      - Bmp7
+      - Bmp8a
+      # Lhx1 UNVERIFIED as LaTP-specific (per CSV) — omitted from production list
+
+    "LaTP2":
+      - Egfr
+      - Epcam
+      - Tfap2c
+      - Gjb3
+      - Hes1
+
+    "Syncytiotrophoblast-I (SynT-I)":
+      - Syna
+      - Slc16a1
+      - Tfrc
+      - Stra6
+      - Glis1
+      - Ly6e
+      - Dab1
+      - Hbegf
+      - Tgfa
+
+    "Syncytiotrophoblast-II (SynT-II)":
+      - Gcm1   # master regulator
+      - Synb
+      - Cebpa
+      - Slc16a3
+      - Dlx3
+      - Vegfa
+      - Esx1
+      - Cdkn1c
+      # Gcgr novel per CSV — kept but flag if drives a tiny cluster
+
+    "Sinusoidal TGC (S-TGC)":
+      - Ctsq
+      - Lepr
+      - Podxl
+      - Prl3b1
+      - Prl2c2
+      - Ctsm
+      - Hand1
+
+    # ============================================================
+    # JUNCTIONAL ZONE compartment
+    # ============================================================
+    "Spongiotrophoblast (SpT)":
+      - Tpbpa
+      - Prl3b1
+      - Prl8a8
+      - Prl8a1
+      - Prl5a1
+      - Prl3a1
+      - Prl7a2
+      - Ascl2
+      - Phlda2
+      - Flt1
+
+    "Glycogen trophoblast (GlyT)":
+      - Pcdh12
+      - Aldh1a3
+      - Gjb3
+      - Prl6a1
+      - Prl7b1
+      - Prl7c1
+      - Cdkn1c
+      - Igf2
+      - Tpbpa
+      - Ncam1
+
+    "Junctional zone progenitor (JZP)":
+      - Ascl2
+      - Tpbpa
+      - Cdkn1c
+      - Egfr
+      - Tfap2c
+      - Mki67   # proliferative — should be E12.5 only
+
+    # ============================================================
+    # TGC populations
+    # ============================================================
+    "Parietal TGC (P-TGC)":
+      - Prl3d1   # single most specific per CSV
+      - Prl2c2
+      - Prl3b1
+      - Prl4a1
+      - Hand1
+      - Cts7
+      - Cts8
+      - Tpbpa
+      - Plac1
+
+    "Spiral artery TGC (SpA-TGC)":
+      - Prl7b1
+      - Prl2c2
+      - Tpbpa
+      - Rgs5
+      - Cdh5
+      - Plac1
+      - Mmp9
+
+    "Canal TGC (C-TGC)":
+      - Ctsq
+      - Prl3b1
+      - Prl7b1
+      - Prl2c2
+      - Tpbpa
+      - Hand1
+      # CSV note: may co-cluster with S-TGC — consider merging post-hoc
+
+    "Ectoplacental cone / TSC (EPC/TSC)":
+      # Positive score = QC FLAG (should not appear at E12.5 or E18.5)
+      - Cdx2
+      - Eomes
+      - Elf5
+      - Esrrb
+      - Tfap2c
+      - Sox2
+      - Bmp4
+      - Fgfr2
+      - Klf5
+
+    # ============================================================
+    # FETAL non-trophoblast
+    # ============================================================
+    "Fetal endothelium (labyrinth)":
+      - Pecam1
+      - Cdh5
+      - Kdr
+      - Tek
+      - Egfl7
+      - Emcn
+      - Tie1
+      - Cd34
+      - Esam
+      - Sox17
+      - Plvap
+
+    "Lymphatic-like endothelium":
+      - Flt4
+      - Prox1
+      - Lyve1
+      - Pdpn
+      - Ccl21a
+      - Reln
+
+    "Fetal mesenchyme / fibroblast":
+      - Vim
+      - Col1a1
+      - Col3a1
+      - Col4a1
+      - Pdgfra
+      - Dlk1
+      - Gata4
+      - Kit
+      - Pdpn
+      - Hand1
+
+    "Pericyte / vSMC":
+      - Rgs5    # canonical
+      - Pdgfrb
+      - Cspg4
+      - Mcam
+      - Acta2
+      - Notch3
+      - Kcnj8
+
+    "Hofbauer cell (fetal macrophage)":
+      # Folr2 weak in mouse — leaning on Mrc1/Lyve1/Cd163/Apoe per CSV
+      - Mrc1
+      - Cd163
+      - Lyve1
+      - C1qa
+      - C1qb
+      - C1qc
+      - Csf1r
+      - Cx3cr1
+      - Apoe
+      - Selenop
+      - Dab2
+
+    # ============================================================
+    # MATERNAL
+    # ============================================================
+    "Decidual stromal":
+      - Prl8a2   # gold-standard
+      - Prl3c1
+      - Cryab
+      - Adm
+      - Hand2
+      - Wnt4
+      - Bmp2
+      - Hoxa10
+      - Hoxa11
+      - Igfbp4
+      - Pgr
+
+    "Uterine/decidual NK (trNK + ILC1)":
+      - Klrb1c
+      - Ncr1
+      - Eomes
+      - Tbx21
+      - Itga1    # residency marker
+      - Cd69
+      - Cxcr6
+      - Prf1
+      - Gzma
+      - Gzmb
+      - Ifng
+
+    "Maternal macrophage (PAMM)":
+      # MHC-II high distinguishes from Hofbauer
+      - H2-Eb1
+      - H2-Aa
+      - H2-Ab1
+      - Cd74
+      - S100a9
+      - S100a8
+      - Plac8
+      - Thbs1
+      - Mmp12
+
+    "Maternal endothelium":
+      # Separable from fetal EC only via Xist in male conceptus
+      - Pecam1
+      - Cdh5
+      - Vwf
+      - Emcn
+      - Cd34
+      - Kdr
+      - Eng
+
+    # ============================================================
+    # BLOOD
+    # ============================================================
+    "Primitive (embryonic) erythroblast":
+      # E12.5 dominant; absent at E18.5
+      - Hbb-y
+      - Hba-x
+      - Hbb-bh1
+      - Gypa
+      - Klf1
+      - Gata1
+      - Alas2
+      - Slc4a1
+      - Epor
+
+    "Definitive (adult) erythroblast":
+      # C57BL/6 strain — Hbb-bs / Hbb-bt (verify strain if not C57BL/6)
+      - Hbb-bs
+      - Hbb-bt
+      - Hba-a1
+      - Hba-a2
+      - Alas2
+      - Gypa
+      - Klf1
+      - Slc4a1
+
+    "Monocyte / granulocyte":
+      - Ly6c1
+      - Ly6c2
+      - Ly6g
+      - S100a8
+      - S100a9
+      - Elane
+      - Mpo
+      - Csf3r
+      - Cebpe
+      - Lyz2

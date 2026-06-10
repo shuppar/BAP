@@ -4,143 +4,143 @@ results_dir: results/placenta
 samples:
 - id: MES1.1
   donor_id: m_MES1_1
-  h5: data/Pool3/per_sample_outs/MES1.1/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES1.1/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES1_1/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES1_1/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: MES1.2
   donor_id: m_MES1_2
-  h5: data/Pool3/per_sample_outs/MES1.2/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES1.2/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES1_2/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES1_2/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: F
   pool: Pool3
   library: Pool3
 - id: MES1.3
   donor_id: m_MES1_3
-  h5: data/Pool3/per_sample_outs/MES1.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES1.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES1_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES1_3/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: MES1.4
   donor_id: m_MES1_4
-  h5: data/Pool3/per_sample_outs/MES1.4/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES1.4/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES1_4/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES1_4/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: MES2.1
   donor_id: m_MES2_1
-  h5: data/Pool3/per_sample_outs/MES2.1/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES2.1/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES2_1/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES2_1/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: MES2.2
   donor_id: m_MES2_2
-  h5: data/Pool3/per_sample_outs/MES2.2/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES2.2/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES2_2/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES2_2/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: F
   pool: Pool3
   library: Pool3
 - id: MES2.3
   donor_id: m_MES2_3
-  h5: data/Pool3/per_sample_outs/MES2.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES2.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES2_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES2_3/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: F
   pool: Pool3
   library: Pool3
 - id: MES2.4
   donor_id: m_MES2_4
-  h5: data/Pool3/per_sample_outs/MES2.4/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES2.4/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES2_4/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES2_4/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: F
   pool: Pool3
   library: Pool3
 - id: MES4.4
   donor_id: m_MES4_4
-  h5: data/Pool3/per_sample_outs/MES4.4/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/MES4.4/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/MES4_4/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/MES4_4/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Early_Stress
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: CES1.2
   donor_id: m_CES1_2
-  h5: data/Pool3/per_sample_outs/CES1.2/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/CES1.2/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/CES1_2/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/CES1_2/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Relaxed
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: CES1.3
   donor_id: m_CES1_3
-  h5: data/Pool3/per_sample_outs/CES1.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/CES1.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/CES1_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/CES1_3/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Relaxed
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: CES2.2
   donor_id: m_CES2_2
-  h5: data/Pool4/per_sample_outs/CES2.2/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/CES2.2/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/CES2_2/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/CES2_2/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Relaxed
-  sex: unknown
+  sex: F
   pool: Pool4
   library: Pool4
 - id: CES2.3
   donor_id: m_CES2_3
-  h5: data/Pool3/per_sample_outs/CES2.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/CES2.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/CES2_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/CES2_3/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Relaxed
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: CES3.2
   donor_id: m_CES3_2
-  h5: data/Pool4/per_sample_outs/CES3.2/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/CES3.2/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/CES3_2/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/CES3_2/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Relaxed
-  sex: unknown
+  sex: F
   pool: Pool4
   library: Pool4
 - id: CES4.1
   donor_id: m_CES4_1
-  h5: data/Pool3/per_sample_outs/CES4.1/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool3/per_sample_outs/CES4.1/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool3/per_sample_outs/CES4_1/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool3/per_sample_outs/CES4_1/sample_raw_feature_bc_matrix.tar.gz
   age: E12.5
   group: Relaxed
-  sex: unknown
+  sex: M
   pool: Pool3
   library: Pool3
 - id: LSP1.4
   donor_id: m_LSP1_4
-  h5: data/Pool4/per_sample_outs/LSP1.4/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LSP1.4/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LSP1_4/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LSP1_4/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Late_Stress
   sex: F
@@ -148,8 +148,8 @@ samples:
   library: Pool4
 - id: LSP1.7
   donor_id: m_LSP1_7
-  h5: data/Pool4/per_sample_outs/LSP1.7/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LSP1.7/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LSP1_7/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LSP1_7/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Late_Stress
   sex: F
@@ -157,8 +157,8 @@ samples:
   library: Pool4
 - id: LSP1.3
   donor_id: m_LSP1_3
-  h5: data/Pool4/per_sample_outs/LSP1.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LSP1.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LSP1_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LSP1_3/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Late_Stress
   sex: M
@@ -166,8 +166,8 @@ samples:
   library: Pool4
 - id: LSP2.3
   donor_id: m_LSP2_3
-  h5: data/Pool4/per_sample_outs/LSP2.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LSP2.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LSP2_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LSP2_3/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Late_Stress
   sex: M
@@ -175,8 +175,8 @@ samples:
   library: Pool4
 - id: LCP1.3
   donor_id: m_LCP1_3
-  h5: data/Pool4/per_sample_outs/LCP1.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LCP1.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LCP1_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LCP1_3/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Relaxed
   sex: F
@@ -184,8 +184,8 @@ samples:
   library: Pool4
 - id: LCP2.3
   donor_id: m_LCP2_3
-  h5: data/Pool4/per_sample_outs/LCP2.3/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LCP2.3/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LCP2_3/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LCP2_3/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Relaxed
   sex: F
@@ -193,8 +193,8 @@ samples:
   library: Pool4
 - id: LCP2.2
   donor_id: m_LCP2_2
-  h5: data/Pool4/per_sample_outs/LCP2.2/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LCP2.2/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LCP2_2/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LCP2_2/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Relaxed
   sex: M
@@ -202,8 +202,8 @@ samples:
   library: Pool4
 - id: LCP2.4
   donor_id: m_LCP2_4
-  h5: data/Pool4/per_sample_outs/LCP2.4/sample_filtered_feature_bc_matrix.h5
-  raw_h5: data/Pool4/per_sample_outs/LCP2.4/sample_raw_feature_bc_matrix.tar.gz
+  h5: data/Pool4/per_sample_outs/LCP2_4/sample_filtered_feature_bc_matrix.h5
+  raw_h5: data/Pool4/per_sample_outs/LCP2_4/sample_raw_feature_bc_matrix.tar.gz
   age: E18.5
   group: Relaxed
   sex: M
@@ -238,6 +238,238 @@ pathways:
 random_seed: 42
 annotation:
   celltypist_models: {}
+  stamp_reference: refs/stamp/stamp_ref_allcells.h5
+  stamp_gap_threshold: 0.05
+  stamp_purity_threshold: 0.5
+  stamp_min_cluster_size: 50
+  markers:
+    Labyrinth trophoblast progenitor (LaTP):
+    - Epcam
+    - Met
+    - Tfap2c
+    - Hand1
+    - Hes1
+    - Bmp7
+    - Bmp8a
+    LaTP2:
+    - Egfr
+    - Epcam
+    - Tfap2c
+    - Gjb3
+    - Hes1
+    Syncytiotrophoblast-I (SynT-I):
+    - Syna
+    - Slc16a1
+    - Tfrc
+    - Stra6
+    - Glis1
+    - Ly6e
+    - Dab1
+    - Hbegf
+    - Tgfa
+    Syncytiotrophoblast-II (SynT-II):
+    - Gcm1
+    - Synb
+    - Cebpa
+    - Slc16a3
+    - Dlx3
+    - Vegfa
+    - Esx1
+    - Cdkn1c
+    Sinusoidal TGC (S-TGC):
+    - Ctsq
+    - Lepr
+    - Podxl
+    - Prl3b1
+    - Prl2c2
+    - Ctsm
+    - Hand1
+    Spongiotrophoblast (SpT):
+    - Tpbpa
+    - Prl3b1
+    - Prl8a8
+    - Prl8a1
+    - Prl5a1
+    - Prl3a1
+    - Prl7a2
+    - Ascl2
+    - Phlda2
+    - Flt1
+    Glycogen trophoblast (GlyT):
+    - Pcdh12
+    - Aldh1a3
+    - Gjb3
+    - Prl6a1
+    - Prl7b1
+    - Prl7c1
+    - Cdkn1c
+    - Igf2
+    - Tpbpa
+    - Ncam1
+    Junctional zone progenitor (JZP):
+    - Ascl2
+    - Tpbpa
+    - Cdkn1c
+    - Egfr
+    - Tfap2c
+    - Mki67
+    Parietal TGC (P-TGC):
+    - Prl3d1
+    - Prl2c2
+    - Prl3b1
+    - Prl4a1
+    - Hand1
+    - Cts7
+    - Cts8
+    - Tpbpa
+    - Plac1
+    Spiral artery TGC (SpA-TGC):
+    - Prl7b1
+    - Prl2c2
+    - Tpbpa
+    - Rgs5
+    - Cdh5
+    - Plac1
+    - Mmp9
+    Canal TGC (C-TGC):
+    - Ctsq
+    - Prl3b1
+    - Prl7b1
+    - Prl2c2
+    - Tpbpa
+    - Hand1
+    Ectoplacental cone / TSC (EPC/TSC):
+    - Cdx2
+    - Eomes
+    - Elf5
+    - Esrrb
+    - Tfap2c
+    - Sox2
+    - Bmp4
+    - Fgfr2
+    - Klf5
+    Fetal endothelium (labyrinth):
+    - Pecam1
+    - Cdh5
+    - Kdr
+    - Tek
+    - Egfl7
+    - Emcn
+    - Tie1
+    - Cd34
+    - Esam
+    - Sox17
+    - Plvap
+    Lymphatic-like endothelium:
+    - Flt4
+    - Prox1
+    - Lyve1
+    - Pdpn
+    - Ccl21a
+    - Reln
+    Fetal mesenchyme / fibroblast:
+    - Vim
+    - Col1a1
+    - Col3a1
+    - Col4a1
+    - Pdgfra
+    - Dlk1
+    - Gata4
+    - Kit
+    - Pdpn
+    - Hand1
+    Pericyte / vSMC:
+    - Rgs5
+    - Pdgfrb
+    - Cspg4
+    - Mcam
+    - Acta2
+    - Notch3
+    - Kcnj8
+    Hofbauer cell (fetal macrophage):
+    - Mrc1
+    - Cd163
+    - Lyve1
+    - C1qa
+    - C1qb
+    - C1qc
+    - Csf1r
+    - Cx3cr1
+    - Apoe
+    - Selenop
+    - Dab2
+    Decidual stromal:
+    - Prl8a2
+    - Prl3c1
+    - Cryab
+    - Adm
+    - Hand2
+    - Wnt4
+    - Bmp2
+    - Hoxa10
+    - Hoxa11
+    - Igfbp4
+    - Pgr
+    Uterine/decidual NK (trNK + ILC1):
+    - Klrb1c
+    - Ncr1
+    - Eomes
+    - Tbx21
+    - Itga1
+    - Cd69
+    - Cxcr6
+    - Prf1
+    - Gzma
+    - Gzmb
+    - Ifng
+    Maternal macrophage (PAMM):
+    - H2-Eb1
+    - H2-Aa
+    - H2-Ab1
+    - Cd74
+    - S100a9
+    - S100a8
+    - Plac8
+    - Thbs1
+    - Mmp12
+    Maternal endothelium:
+    - Pecam1
+    - Cdh5
+    - Vwf
+    - Emcn
+    - Cd34
+    - Kdr
+    - Eng
+    Primitive (embryonic) erythroblast:
+    - Hbb-y
+    - Hba-x
+    - Hbb-bh1
+    - Gypa
+    - Klf1
+    - Gata1
+    - Alas2
+    - Slc4a1
+    - Epor
+    Definitive (adult) erythroblast:
+    - Hbb-bs
+    - Hbb-bt
+    - Hba-a1
+    - Hba-a2
+    - Alas2
+    - Gypa
+    - Klf1
+    - Slc4a1
+    Monocyte / granulocyte:
+    - Ly6c1
+    - Ly6c2
+    - Ly6g
+    - S100a8
+    - S100a9
+    - Elane
+    - Mpo
+    - Csf3r
+    - Cebpe
+    - Lyz2
 reference:
   ref_h5ad: null
   labels_key: cell_type

@@ -281,18 +281,32 @@ def main():
         # --- 5. Sex check ---
         print(f"\n[4/4] Sex check (Y-linked vs Xist)...")
         sx_df = pd.DataFrame(sex_checks)
+        # `assigned_sex` is the source of truth for downstream sex covariates.
+        # Rule: copy `inferred_sex`; replace 'ambiguous' with 'F'.
+        # Rationale: 10x Flex under-detects Xist, so most declared-F samples
+        # come back 'ambiguous' (low Y-score, ~0 X-score). Absence of Y =
+        # female by biology. Real declared/inferred mismatches (e.g. brain
+        # C5: declared F, Y-score 1.09) keep the inferred call → assigned 'M'.
+        sx_df["assigned_sex"] = sx_df["inferred_sex"].where(
+            sx_df["inferred_sex"] != "ambiguous", "F"
+        )
         sx_df.to_csv(out_dir / "sex_check.csv", index=False)
-        # Only flag mismatches where sex was actually declared (not 'unknown' E12.5 placenta)
+
+        # Flag declared/assigned mismatches (real swaps, not Xist non-detection)
         declared = sx_df[sx_df["declared_sex"].isin(["M", "F"])]
-        mismatches = declared[declared["declared_sex"] != declared["inferred_sex"]]
+        mismatches = declared[declared["declared_sex"] != declared["assigned_sex"]]
         n_unknown = (sx_df["declared_sex"] == "unknown").sum()
+        n_ambiguous = (sx_df["inferred_sex"] == "ambiguous").sum()
         if len(mismatches):
-            print(f"  ⚠ {len(mismatches)} sex MISMATCH(es):")
-            print(mismatches.to_string(index=False))
+            print(f"  ⚠ {len(mismatches)} declared/assigned MISMATCH(es) — investigate as possible sample swaps:")
+            print(mismatches[["sample_id", "declared_sex", "y_score",
+                              "x_score", "inferred_sex", "assigned_sex"]].to_string(index=False))
         else:
-            print(f"  ✓ All {len(declared)} declared-sex samples: declared matches inferred")
+            print(f"  ✓ All {len(declared)} declared-sex samples agree with assigned_sex")
+        if n_ambiguous:
+            print(f"  ℹ {n_ambiguous} sample(s) with inferred_sex='ambiguous' (low Y AND low Xist) → assigned 'F' (10x Flex Xist under-detection)")
         if n_unknown:
-            print(f"  ℹ {n_unknown} sample(s) with declared sex='unknown' (E12.5 placenta) — sex inferred from Y/Xist")
+            print(f"  ℹ {n_unknown} sample(s) with declared_sex='unknown' (E12.5 placenta) → assigned_sex from Y-score")
         plot_sex_check(sx_df, out_dir / "sex_check_scatter.png")
 
     # --- Summary ---
