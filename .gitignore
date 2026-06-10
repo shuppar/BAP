@@ -48,3 +48,4 @@ renv/staging/
 # Logs
 *.log
 logs/
+results_WS/

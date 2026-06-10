@@ -1,4 +1,0 @@
-Phase 0 validation: PASSED
-Tissue: placenta
-Samples: 23
-Outputs: /home/poller/BAP-BrainPlacenta/results/placenta/validation
