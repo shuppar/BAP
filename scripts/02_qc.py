@@ -109,6 +109,11 @@ def apply_filters(adata, thr: dict):
     # Effective lower bounds: max of MAD bound and absolute floor (if set)
     n_genes_lo = max(thr["n_genes_lo"], thr["min_genes_floor"] or 0)
     counts_lo  = max(thr["total_counts_lo"], thr["min_counts_floor"] or 0)
+    # Record the EFFECTIVE bounds back into thr so the summary CSV reports the
+    # bound that was actually applied (not the raw MAD bound, which clamps to 0
+    # on right-skewed distributions and looks misleadingly like "no floor").
+    thr["n_genes_lo_effective"] = float(n_genes_lo)
+    thr["total_counts_lo_effective"] = float(counts_lo)
     mask = (
         (o["pct_counts_mt"] <= thr["pct_mt_max"])
         & (o["pct_counts_hemo"] <= thr["pct_hemo_max"])
@@ -195,17 +200,29 @@ def plot_thresholds(adata_pre, thr: dict, sample_id: str, out: Path) -> None:
 # ----------------------------------------------------------------------------
 
 def process_sample(sample: dict, qc_cfg: dict, max_cells: int | None,
-                   seed: int, out_h5ad: Path, out_plot: Path) -> dict:
+                   seed: int, out_h5ad: Path, out_plot: Path,
+                   soupx_dir: Path | None = None) -> dict:
     """Run QC for one sample. Returns a summary row dict."""
     sid = sample["id"]
-    print(f"  [{sid}] loading {Path(sample['h5']).name}")
-    adata = sc.read_10x_h5(sample["h5"])
-    adata.var_names_make_unique()
 
-    # Attach metadata up front — downstream phases expect these on .obs
+    # Prefer SoupX-corrected counts if available; fall back to Cell Ranger h5.
+    soupx_path = soupx_dir / f"{sid}.h5ad" if soupx_dir else None
+    if soupx_path and soupx_path.exists():
+        print(f"  [{sid}] loading SoupX-corrected h5ad")
+        adata = sc.read_h5ad(soupx_path)
+        source = "soupx"
+    else:
+        print(f"  [{sid}] loading {Path(sample['h5']).name} (Cell Ranger fallback)")
+        adata = sc.read_10x_h5(sample["h5"])
+        adata.var_names_make_unique()
+        source = "cellranger"
+
+    # Attach metadata — skip fields already set by SoupX h5ad.
     for k in ["donor_id", "age", "group", "sex", "pool", "library"]:
-        adata.obs[k] = sample[k]
-    adata.obs["sample_id"] = sid
+        if k not in adata.obs.columns:
+            adata.obs[k] = sample[k]
+    if "sample_id" not in adata.obs.columns:
+        adata.obs["sample_id"] = sid
 
     # Dev mode: subsample cells before any computation (saves RAM on laptop)
     n_pre_subset = adata.n_obs
@@ -238,7 +255,7 @@ def process_sample(sample: dict, qc_cfg: dict, max_cells: int | None,
     plot_thresholds(adata_pre, thr, sid, out_plot / f"{sid}_thresholds.png")
 
     return {
-        "sample_id": sid, "n_pre": n_pre, "n_post": n_post,
+        "sample_id": sid, "source": source, "n_pre": n_pre, "n_post": n_post,
         "pct_kept": round(100 * n_post / n_pre, 2),
         "median_umi_post": float(np.median(adata_post.obs["total_counts"])),
         "median_genes_post": float(np.median(adata_post.obs["n_genes_by_counts"])),
@@ -318,9 +335,10 @@ def main():
     seed = cfg.get("random_seed", 42)
 
     print(f"\nProcessing {len(samples)} samples...")
+    soupx_dir = Path(cfg["results_dir"]) / "h5ad" / "02_soupx_corrected"
     rows = []
     for s in samples:
-        row = process_sample(s, cfg["qc"], max_cells, seed, out_h5ad, out_plot)
+        row = process_sample(s, cfg["qc"], max_cells, seed, out_h5ad, out_plot, soupx_dir=soupx_dir)
         rows.append(row)
 
     summary = pd.DataFrame(rows)

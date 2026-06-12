@@ -70,11 +70,20 @@ def compute_pre_integration_umap(adata) -> None:
     adata.obsm["X_umap_pre"] = tmp.obsm["X_umap"]
 
 
-def compute_post_integration_umap(adata) -> None:
-    """Neighbors → UMAP on scVI latent."""
-    print("  Computing post-integration UMAP (on scVI latent)...")
-    sc.pp.neighbors(adata, use_rep="X_scVI")
-    sc.tl.umap(adata)
+def compute_post_integration_umap(adata, n_neighbors: int = 30,
+                                  min_dist: float = 0.3, spread: float = 1.2,
+                                  seed: int = 42) -> None:
+    """Neighbors → UMAP on scVI latent.
+
+    The neighbor graph built here is REUSED by Phase 6 for clustering (it
+    persists in adata.obsp), so the cluster labels and this embedding come
+    from the same graph — consistent figure + clustering.
+    """
+    print(f"  Computing post-integration UMAP on scVI latent "
+          f"(n_neighbors={n_neighbors}, min_dist={min_dist}, spread={spread})...")
+    sc.pp.neighbors(adata, use_rep="X_scVI", n_neighbors=n_neighbors,
+                    random_state=seed)
+    sc.tl.umap(adata, min_dist=min_dist, spread=spread, random_state=seed)
 
 
 def plot_umap_panel(adata, basis: str, color_keys: list[str],
@@ -94,8 +103,12 @@ def plot_umap_panel(adata, basis: str, color_keys: list[str],
     try:
         for ax, key in zip(axes, color_keys):
             sc.pl.umap(adata, color=key, ax=ax, show=False, frameon=False,
-                       legend_fontsize=7, size=8)
+                       legend_fontsize=7, size=6, alpha=0.7)
             ax.set_title(f"{title}: {key}")
+            # Rasterize scatter points (keep text/axes vector) — standard for
+            # large-cell-count figures; keeps PDF size sane on 600K+ points.
+            for coll in ax.collections:
+                coll.set_rasterized(True)
     finally:
         if basis != "X_umap" and saved_umap is not None:
             adata.obsm["X_umap"] = saved_umap
@@ -130,6 +143,16 @@ def main():
     parser = argparse.ArgumentParser(description="Phase 5: scVI integration")
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--cpu", action="store_true", help="Force CPU")
+    parser.add_argument("--reuse-model", action="store_true", dest="reuse_model",
+                        help="Load the existing trained scvi_model/ and skip training. "
+                             "Recomputes latent + neighbor graph + UMAP only (CPU, fast). "
+                             "Use to re-render embeddings without a GPU retrain.")
+    parser.add_argument("--n-neighbors", type=int, default=None, dest="n_neighbors",
+                        help="UMAP/clustering neighbor graph size (default 30).")
+    parser.add_argument("--min-dist", type=float, default=None, dest="min_dist",
+                        help="UMAP min_dist (default 0.3).")
+    parser.add_argument("--spread", type=float, default=None, dest="spread",
+                        help="UMAP spread (default 1.2).")
     args = parser.parse_args()
 
     print(f"\n=== Phase 5: scVI integration ===")
@@ -219,34 +242,72 @@ def main():
         batch_key="pool",
         continuous_covariate_keys=continuous_covariates,
     )
-    model = scvi.model.SCVI(adata_hvg, n_layers=n_layers, n_latent=n_latent)
 
-    print(f"\n[3/5] Training scVI (max_epochs={max_epochs}, batch_size={batch_size}, "
-          f"early_stopping_patience={es_patience})")
-    model.train(
-        max_epochs=max_epochs,
-        batch_size=batch_size,
-        early_stopping=True,
-        early_stopping_patience=es_patience,
-        accelerator=accelerator,
-        devices=1,
-        precision=precision,
-    )
-
-    if model_dir.exists():
-        shutil.rmtree(model_dir)
-    model.save(str(model_dir), overwrite=True)
-    history = pd.concat({k: pd.DataFrame(v) for k, v in model.history.items()}, axis=1)
-    history.columns = history.columns.droplevel(1)
-    history.to_csv(paths["tables"] / "05_integration_scvi_history.csv", index=True)
-    plot_loss_curve(history, plot_dir / "scvi_loss_curve.png")
-    print(f"  Trained: actual epochs = {len(history)}")
+    if args.reuse_model:
+        # Reuse path: load the already-trained model instead of retraining.
+        # scVI's load REQUIRES the same adata it was trained on (same cells,
+        # same genes, same setup). We pass the freshly-built adata_hvg and let
+        # scvi-tools validate; we also assert the registered cell/gene counts
+        # match, failing loud rather than silently producing a wrong latent.
+        if not model_dir.exists():
+            sys.exit(
+                f"ERROR: --reuse-model set but no saved model at {model_dir}.\n"
+                f"  Run Phase 5 once WITHOUT --reuse-model to train first."
+            )
+        print(f"\n[3/5] Loading trained scVI model from {model_dir} (skip training)")
+        model = scvi.model.SCVI.load(str(model_dir), adata=adata_hvg)
+        # Integrity check: the loaded model's registered data must match adata_hvg.
+        reg = model.adata
+        if reg.n_obs != adata_hvg.n_obs or reg.n_vars != adata_hvg.n_vars:
+            sys.exit(
+                f"ERROR: reused model shape {reg.n_obs}×{reg.n_vars} != current "
+                f"adata_hvg {adata_hvg.n_obs}×{adata_hvg.n_vars}.\n"
+                f"  The saved model was trained on different data. Retrain "
+                f"(drop --reuse-model) instead of reusing."
+            )
+        print(f"  Loaded model matches current data "
+              f"({reg.n_obs:,} cells × {reg.n_vars:,} genes). No training.")
+        # history may be empty on a reloaded model; skip the loss curve gracefully.
+        history = None
+    else:
+        model = scvi.model.SCVI(adata_hvg, n_layers=n_layers, n_latent=n_latent)
+        print(f"\n[3/5] Training scVI (max_epochs={max_epochs}, batch_size={batch_size}, "
+              f"early_stopping_patience={es_patience})")
+        model.train(
+            max_epochs=max_epochs,
+            batch_size=batch_size,
+            early_stopping=True,
+            early_stopping_patience=es_patience,
+            accelerator=accelerator,
+            devices=1,
+            precision=precision,
+        )
+        if model_dir.exists():
+            shutil.rmtree(model_dir)
+        model.save(str(model_dir), overwrite=True)
+        history = pd.concat({k: pd.DataFrame(v) for k, v in model.history.items()}, axis=1)
+        history.columns = history.columns.droplevel(1)
+        history.to_csv(paths["tables"] / "05_integration_scvi_history.csv", index=True)
+        plot_loss_curve(history, plot_dir / "scvi_loss_curve.png")
+        print(f"  Trained: actual epochs = {len(history)}")
 
     print(f"\n[4/5] Extracting latent + computing UMAPs...")
     adata.obsm["X_scVI"] = model.get_latent_representation()
 
+    # UMAP / neighbor-graph params. Defaults tuned for 400-700K-cell atlases.
+    # The post-integration neighbor graph built here is reused by Phase 6 for
+    # clustering, so figure and clusters share one graph (Option B).
+    clust_cfg = cfg.get("clustering", {})
+    n_neighbors = int(args.n_neighbors or clust_cfg.get("n_neighbors", 30))
+    umap_min_dist = float(args.min_dist if args.min_dist is not None
+                          else clust_cfg.get("min_dist", 0.3))
+    umap_spread = float(args.spread if args.spread is not None
+                        else clust_cfg.get("spread", 1.2))
+
     compute_pre_integration_umap(adata)
-    compute_post_integration_umap(adata)
+    compute_post_integration_umap(adata, n_neighbors=n_neighbors,
+                                  min_dist=umap_min_dist, spread=umap_spread,
+                                  seed=seed)
 
     # Pre-integration: pool, age, group, sex
     plot_umap_panel(adata, "X_umap_pre", ["pool", "age", "group", "sex"],

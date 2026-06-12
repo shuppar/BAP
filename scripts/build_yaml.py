@@ -66,6 +66,40 @@ SHARED_CONFIG = {
         "use_builtin_stress_sets": False,   # optional niche supplement (off)
         "run_tf_activity": False,           # CollecTRI TF activity (needs network)
     },
+    # Phase 4 (04_integration_prep.py) — HVG selection + cell cycle scoring.
+    # n_hvg is overridden per tissue in build_yaml_for_tissue (3000 brain /
+    # 2000 placenta). seurat_v3 flavor, batch_key=pool. HVG exclusion lists
+    # (mito/ribo/hemo/sex + placenta pregnancy genes) are hardcoded in the
+    # script, not config-driven.
+    "integration": {
+        "n_hvg": 3000,                      # tissue default; placenta overridden to 2000
+        "batch_key": "pool",                # scVI batch_key (technical multiplex)
+    },
+    # Phase 5 (05_integration.py) — scVI model. accelerator/precision are
+    # auto-selected by _utils.select_accelerator (gpu+bf16 on the Ada, cpu+fp32
+    # otherwise), so they're not set here. condition_cell_cycle=false: cell
+    # cycle is real biology (P1 progenitors, trophoblast) and a candidate stress
+    # phenotype — we do NOT regress it out by default. Flip to true only if the
+    # phase UMAP shows cycle driving artifactual cross-cell-type clusters.
+    "scvi": {
+        "n_latent": 30,
+        "n_layers": 2,
+        "max_epochs": 400,
+        "batch_size": 1024,
+        "early_stopping_patience": 30,
+        "condition_cell_cycle": False,
+    },
+    # Phase 5 builds the neighbor graph + UMAP with these; Phase 6 REUSES that
+    # graph for clustering (Option B — figure and clusters share one graph).
+    # Tuned for 400-700K-cell atlases: n_neighbors=30 (cohesive clusters),
+    # min_dist=0.3 + spread=1.2 (clean, well-separated islands without scatter).
+    # `resolution` (Phase 6 Leiden) is set per tissue: placenta=2.0; brain omits
+    # it to auto-select via the knee of the resolution-vs-nclusters curve.
+    "clustering": {
+        "n_neighbors": 30,
+        "min_dist": 0.3,
+        "spread": 1.2,
+    },
     "random_seed": 42,
 }
 
@@ -77,17 +111,12 @@ SHARED_CONFIG = {
 # directly afterwards if you need to point at local model/atlas files — re-running
 # build_yaml.py will reset these to the defaults below, so keep custom paths noted.
 #
-# celltypist_models: per-age CellTypist model (Phase 7). Brain P1 has a built-in
-#   model; adult brain and placenta need a custom .pkl or fall back to markers.
-# reference: scANVI label-transfer config (Phase 7c, 07c_label_transfer.py).
-#   - ref_h5ad: path to a labeled reference AnnData (e.g. ABC Atlas subset).
-#   - labels_key: .obs column in the reference holding cell type labels.
-#   - region_key: .obs column holding region labels. Set to null for tissues
-#     with NO spatial/regional reference (e.g. placenta) — regional claims are
-#     then skipped entirely and only cell-type labels are transferred.
-#   - region_concentration_threshold: a cell type earns a regional label only if
-#     >= this fraction of its reference cells fall in a single region. Below it,
-#     the region label is suppressed (no fuzzy regional claims). 0.8 = 80%.
+# celltypist_models: per-age CellTypist model (Phase 7). Brain 4W/3mo use the
+#   ABC-trained pkls; P1 is null (annotated by scANVI instead — see scanvi_p1).
+# scanvi_p1: P1 scANVI label-transfer config (Phase 7 subprocess run_scanvi_p1.py).
+#   - ref_h5ad: Rosenberg P2-brain reference (prepare_rosenberg_reference.py).
+#   - labels_key: .obs column in the reference holding the fine cell-type label.
+#   - config_dir: where the rosenberg_*.csv derivation maps live (default config).
 # -----------------------------------------------------------------------------
 
 REFERENCE_CONFIG = {
@@ -104,13 +133,15 @@ REFERENCE_CONFIG = {
         #               aware, unlike abc_subclass_to_region.csv which buries
         #               cross-regional subclasses (cortical interneurons) in
         #               `multi_region`.
-        # P1 uses the built-in developing-brain model and has NO adult-subclass
-        # or region model (regions aren't well-defined in the developing brain).
+        # P1 is annotated by scANVI label transfer from Rosenberg 2018 (see
+        # scanvi_p1 below), NOT CellTypist — Di Bella is cortex-only and
+        # mislabeled ~42% of whole-brain P1 cells as erythrocyte. So P1's
+        # CellTypist entry is null; Phase 7 routes P1 to the scANVI subprocess.
         # 4W/3mo share the ABC-trained pkls written by train_celltypist_brain.py.
         "celltypist_models": {
-            "P1":  {"class": "Developing_Mouse_Brain.pkl",                    # built-in (Di Bella 2021)
-                    "subclass": None,                                         # no adult subclass at P1
-                    "region": None},                                          # regions not meaningful at P1
+            "P1":  {"class": None,                                            # P1 -> scANVI (see scanvi_p1)
+                    "subclass": None,
+                    "region": None},
             "4W":  {"class": "refs/celltypist_brain_adult_class.pkl",         # ABC WMB-10Xv3 class (34)
                     "subclass": "refs/celltypist_brain_adult_subclass.pkl",   # ABC subclass (~334)
                     "region": "refs/celltypist_brain_adult_region.pkl"},      # ABC anatomical_division_label (~12)
@@ -118,20 +149,21 @@ REFERENCE_CONFIG = {
                     "subclass": "refs/celltypist_brain_adult_subclass.pkl",
                     "region": "refs/celltypist_brain_adult_region.pkl"},
         },
-        # Deterministic maps emitted by train_celltypist_brain.py. Carried here
-        # but NOT applied at Phase 7 — broad is derived only when needed
-        # (Phase 9 cross-species). class->broad covers ABC adult classes
-        # (4W/3mo); P1's Di Bella labels need a separate broad map if Phase 9
-        # wants P1 included. The subclass->region CSV is now informational
-        # only — per-cell region comes from the region model.
+        # P1 scANVI label transfer (Phase 7 subprocess: run_scanvi_p1.py).
+        # Transfers the published Rosenberg fine label; Phase 7 derives
+        # class/region/broad via the config/rosenberg_*.csv maps written by
+        # prepare_rosenberg_reference.py.
+        "scanvi_p1": {
+            "ref_h5ad":   "refs/rosenberg_p2brain_reference.h5ad",
+            "labels_key": "rosenberg_fine",
+            "config_dir": "config",
+        },
+        # Deterministic class->broad map. Phase 7 now derives celltypist_broad
+        # for ALL ages: ABC classes (4W/3mo) via class_to_broad_csv, Rosenberg
+        # classes (P1) via config/rosenberg_class_to_broad.csv (auto-found via
+        # scanvi_p1.config_dir). subclass->region CSV is informational only.
         "class_to_broad_csv":     "refs/abc_class_to_broad.csv",
         "subclass_to_region_csv": "refs/abc_subclass_to_region.csv",
-        "reference": {
-            "ref_h5ad": "refs/abc_brain_ref.h5ad",       # ABC atlas subset for scANVI (Phase 7c)
-            "labels_key": "cell_type",                   # cell type column in the reference
-            "region_key": "region",                      # region column → enables regional claims
-            "region_concentration_threshold": 0.8,
-        },
     },
     "placenta": {
         # No built-in CellTypist placenta model. Primary track is STAMP
@@ -143,12 +175,6 @@ REFERENCE_CONFIG = {
             "gap_threshold":       0.05,   # per-cell low-confidence threshold
             "purity_threshold":    0.5,    # per-cluster low-purity threshold
             "min_cluster_size":    50,     # clusters smaller -> 'under_populated'
-        },
-        "reference": {
-            "ref_h5ad": None,                      # path to a placenta reference (if any)
-            "labels_key": "cell_type",
-            "region_key": None,                    # NO spatial reference → cell-type only
-            "region_concentration_threshold": 0.8, # ignored when region_key is null
         },
     },
 }
@@ -302,21 +328,35 @@ STRESS_FOCUSED_CELL_TYPES = [
 
 def build_yaml_for_tissue(df: pd.DataFrame, tissue: str) -> dict:
     """Build the config dict for one tissue."""
+    import copy
     sub = df[df["tissue"] == tissue].copy()
+
+    # Deep-copy SHARED_CONFIG so per-tissue overrides below don't leak into the
+    # other tissue (nested dicts like integration/clustering are mutated).
+    shared = copy.deepcopy(SHARED_CONFIG)
 
     cfg = {
         "tissue": tissue,
         "group_reference": "Relaxed",       # Relaxed is baseline; +logFC = upregulated in stress
         "results_dir": f"results/{tissue}",
         "samples": [build_sample_entry(r) for _, r in sub.iterrows()],
-        **SHARED_CONFIG,
+        **shared,
     }
+
+    # --- Tissue-specific overrides ---
+    if tissue == "placenta":
+        # Placenta uses fewer HVGs (less cell-type diversity than whole brain);
+        # pregnancy genes already excluded in Phase 4.
+        cfg["integration"]["n_hvg"] = 2000
+        # Placenta Leiden resolution locked at 2.0 (resolves trophoblast subtypes);
+        # brain omits `resolution` to auto-select via the knee curve.
+        cfg["clustering"]["resolution"] = 2.0
     # Per-tissue annotation + reference config (Phase 7 / 7c).
     ref = REFERENCE_CONFIG.get(tissue, {})
     if "celltypist_models" in ref:
         annotation = {"celltypist_models": ref["celltypist_models"]}
-        # Carry the deterministic mapping CSVs if declared (brain two-tier).
-        for k in ("class_to_broad_csv", "subclass_to_region_csv"):
+        # Carry the deterministic mapping CSVs + P1 scANVI block if declared.
+        for k in ("class_to_broad_csv", "subclass_to_region_csv", "scanvi_p1"):
             if k in ref:
                 annotation[k] = ref[k]
         cfg["annotation"] = annotation
@@ -329,8 +369,9 @@ def build_yaml_for_tissue(df: pd.DataFrame, tissue: str) -> dict:
         ann["stamp_gap_threshold"]    = stamp.get("gap_threshold", 0.05)
         ann["stamp_purity_threshold"] = stamp.get("purity_threshold", 0.5)
         ann["stamp_min_cluster_size"] = stamp.get("min_cluster_size", 50)
-    if "reference" in ref:
-        cfg["reference"] = ref["reference"]
+    # NOTE: the old top-level `reference:` block (Phase 7c scANVI) is removed —
+    # 7c is deleted; P1 scANVI now lives under annotation.scanvi_p1 and runs
+    # inside Phase 7 via the run_scanvi_p1.py subprocess.
     # Merge curated marker sets from config/{tissue}_markers.yaml if present.
     # Survives regen — marker source files live in config/, never overwritten.
     markers = load_markers_yaml(tissue)

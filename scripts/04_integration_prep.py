@@ -76,6 +76,82 @@ def build_exclusion_mask(var_names: pd.Index, tissue: str) -> pd.Series:
 
 
 # ----------------------------------------------------------------------------
+# Ensembl -> symbol var_names swap (post-concat)
+#
+# SoupX (Phase 1) writes Ensembl IDs as var_names. The rest of the pipeline
+# (cell cycle scoring, HVG exclusion, marker dotplots, DEG/volcano labels)
+# was written assuming gene SYMBOLS as var_names, matching scanpy's default
+# 10x reader and field convention. We swap once, post-concat, on the combined
+# object so concat itself still aligns genes on the stable Ensembl key.
+#
+# Guards:
+#   - blank/NA symbols fall back to their Ensembl ID (never become "")
+#   - var_names_make_unique() suffixes the remaining duplicate symbols
+#   - focal gene lists (cell cycle + brain marker-gate genes) are asserted
+#     present and UNSUFFIXED -- if a gene we rely on got a "-1" suffix from a
+#     collision, fail loud rather than silently miss it downstream.
+# ----------------------------------------------------------------------------
+
+def swap_var_names_to_symbols(adata) -> None:
+    """Swap var_names from Ensembl IDs to gene symbols, IN PLACE.
+
+    Keeps Ensembl IDs in var['gene_ids']. No-op if var_names already symbols.
+    """
+    if not str(adata.var_names[0]).startswith("ENSMUS"):
+        print("  var_names already symbols (no swap needed)")
+        return
+
+    # Find the symbol column (SoupX writes 'symbol'; 10x reader uses other names)
+    sym_col = None
+    for cand in ("symbol", "Symbol", "gene_symbols", "feature_name"):
+        if cand in adata.var.columns:
+            sym_col = cand
+            break
+    if sym_col is None:
+        raise ValueError(
+            "var_names are Ensembl IDs but no symbol column found in var. "
+            f"Columns: {list(adata.var.columns)}"
+        )
+
+    ensembl = adata.var_names.tolist()
+    symbols = adata.var[sym_col].astype(str).values.copy()
+
+    # Blank/NA symbols -> fall back to Ensembl ID
+    n_blank = 0
+    for i, s in enumerate(symbols):
+        if s in ("", "nan", "None") or pd.isna(s):
+            symbols[i] = ensembl[i]
+            n_blank += 1
+
+    adata.var["gene_ids"] = ensembl
+    adata.var_names = pd.Index(symbols)
+    n_dup_before = int(adata.var_names.duplicated().sum())
+    adata.var_names_make_unique()
+
+    print(f"  swapped var_names: Ensembl → symbol "
+          f"({n_blank} blank→Ensembl, {n_dup_before} duplicate symbols suffixed)")
+
+    # Guard: focal genes must be present and unsuffixed
+    present = set(adata.var_names)
+    missing = sorted(g for g in _FOCAL_SYMBOLS if g not in present)
+    suffixed = sorted(
+        g for g in _FOCAL_SYMBOLS
+        if g not in present and any(v.startswith(g + "-") for v in adata.var_names)
+    )
+    if suffixed:
+        raise ValueError(
+            f"Focal gene(s) got make_unique suffixes (symbol collision): {suffixed}.\n"
+            f"  These are matched by exact symbol downstream and would be silently "
+            f"missed. Investigate the collision before proceeding."
+        )
+    if missing:
+        # missing-but-not-suffixed = simply absent from the panel; that's fine
+        # for cell cycle (score_genes ignores misses) but worth a note.
+        print(f"  note: {len(missing)} focal gene(s) absent from panel "
+              f"(not in Flex probe set): {missing[:8]}{'...' if len(missing) > 8 else ''}")
+
+
+# ----------------------------------------------------------------------------
 # Cell cycle gene lists (mouse)
 #
 # Source: Tirosh et al. 2016 (Science) — originally human; converted to mouse
@@ -109,6 +185,17 @@ G2M_GENES_MOUSE = [
     "Cbx5", "Cenpa",
 ]   # Fam64a/Pimreg and Hn1/Jpt1: old/new MGI symbols for the same genes —
     # both kept so the list survives either annotation version.
+
+
+# Genes the pipeline matches by exact symbol downstream. If any of these got
+# suffixed by make_unique (i.e. collided with another symbol), we want to know.
+_FOCAL_SYMBOLS = set(S_GENES_MOUSE) | set(G2M_GENES_MOUSE) | {
+    # brain marker-gate genes (Phase 7 BRAIN_GATE_CONFIG)
+    "Cx3cr1", "P2ry12", "Tmem119", "Csf1r", "Aif1",
+    "Aqp4", "Gja1", "Slc1a3", "Aldh1l1",
+    "Mbp", "Mog", "Plp1", "Mag",
+    "Cldn5", "Pecam1", "Cdh5",
+}
 
 
 def score_cell_cycle(adata) -> None:
@@ -283,12 +370,35 @@ def main():
             sys.exit(f"ERROR: missing input {path}. Run 03_doublets.py first.")
         adatas[s["id"]] = sc.read_h5ad(path)
 
+    # Capture Ensembl->symbol mapping from the union of all samples BEFORE concat.
+    # merge="same" can drop the var['symbol'] column if per-sample var frames
+    # differ at all, so we rebuild it on the combined object from this mapping.
+    ens2sym: dict[str, str] = {}
+    for a in adatas.values():
+        for cand in ("symbol", "Symbol", "gene_symbols", "feature_name"):
+            if cand in a.var.columns:
+                for ens, sym in zip(a.var_names, a.var[cand].astype(str).values):
+                    if ens not in ens2sym and sym not in ("", "nan", "None"):
+                        ens2sym[ens] = sym
+                break
+
     combined = ad.concat(
         adatas, axis=0, join="outer", merge="same",
         label="sample_id_concat", index_unique="-",
     )
     combined.obs.drop(columns=["sample_id_concat"], errors="ignore", inplace=True)
     print(f"  Combined: {combined.n_obs:,} cells × {combined.n_vars:,} genes")
+
+    # Ensure a 'symbol' column exists on the combined object (rebuild from the
+    # pre-concat mapping if merge="same" dropped it).
+    if "symbol" not in combined.var.columns and ens2sym:
+        combined.var["symbol"] = [
+            ens2sym.get(ens, ens) for ens in combined.var_names
+        ]
+
+    # Swap Ensembl IDs -> symbols (concat aligned on stable Ensembl key above;
+    # everything downstream wants symbols). Ensembl kept in var['gene_ids'].
+    swap_var_names_to_symbols(combined)
 
     if not sp.issparse(combined.X):
         combined.X = sp.csr_matrix(combined.X)

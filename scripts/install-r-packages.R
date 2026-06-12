@@ -6,6 +6,8 @@
 #   - renv               : R env management (lock file = renv.lock)
 #   - BiocManager        : Bioconductor installer
 #   - scDblFinder        : doublet detection (primary, called as subprocess from Python)
+#   - SoupX              : ambient RNA correction Phase 1 (replaces CellBender)
+#   - scran              : quickCluster for SoupX + normalization for scDblFinder
 #   - edgeR              : DE cross-check (secondary)
 #   - jsonlite           : JSON I/O for Python <-> R data exchange
 #   - Matrix             : sparse matrices (required by scDblFinder)
@@ -75,8 +77,9 @@ if (file.exists("renv.lock")) {
     "edgeR",
     "SingleCellExperiment",
     "DropletUtils",
-    "scran",          # used by scDblFinder for normalization
+    "scran",          # quickCluster for SoupX + normalization for scDblFinder
     "scuttle",        # used by scDblFinder for QC
+    "SoupX",          # Phase 1 ambient RNA correction (replaces CellBender)
     "speckle",        # propeller — Phase 8a composition (replaces scCODA)
     "limma"           # required by propeller (empirical-Bayes moderation)
   )
@@ -113,8 +116,8 @@ options(error = NULL)
 # -- 9. Sanity check: load every package once to confirm it works --
 message("[setup] Verifying packages load correctly...")
 required <- c("scDblFinder", "edgeR", "jsonlite",
-              "SingleCellExperiment", "DropletUtils", "speckle", "limma",
-              "msigdbr")
+              "SingleCellExperiment", "DropletUtils", "scran", "SoupX",
+              "speckle", "limma", "msigdbr")
 for (pkg in required) {
   ok <- suppressMessages(requireNamespace(pkg, quietly = TRUE))
   if (!ok) {

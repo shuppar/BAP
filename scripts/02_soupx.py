@@ -80,11 +80,12 @@ def resolve_raw_path(raw_h5_path: str, tmp_dir: Path) -> str:
                 tar.extractall(extract_dir, filter="data")
             except TypeError:
                 tar.extractall(extract_dir)
-        # Find a directory that looks like a 10X MTX dir
-        for d in extract_dir.rglob("*"):
-            if not d.is_dir():
-                continue
-            names = {p.name for p in d.iterdir()}
+        # Find a directory that looks like a 10X MTX dir. Some Cell Ranger
+        # tar.gz archives have the three files at the archive root (no
+        # enclosing directory), others put them in a subdir -- check both.
+        candidates = [extract_dir] + [d for d in extract_dir.rglob("*") if d.is_dir()]
+        for d in candidates:
+            names = {p.name for p in d.iterdir() if p.is_file()}
             if {"matrix.mtx.gz", "barcodes.tsv.gz", "features.tsv.gz"}.issubset(names):
                 return str(d)
             if {"matrix.mtx", "barcodes.tsv", "features.tsv"}.issubset(names):

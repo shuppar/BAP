@@ -54,11 +54,55 @@ tod <- counts(raw)       # table of droplets (raw), genes x droplets
 cat(sprintf("[soupx] %s: filtered=%d cells, raw=%d droplets, %d genes\n",
             args$sample_id, ncol(toc), ncol(tod), nrow(toc)))
 
-# Sanity: gene rows must match between filtered and raw
-if (!identical(rownames(toc), rownames(tod))) {
-  stop(sprintf("[soupx] %s: gene rows differ between filtered and raw matrices",
+# Align features via rowData$ID (Ensembl). read10xCounts doesn't always set
+# matrix rownames identically for the H5 vs MTX paths, so don't rely on
+# `identical(rownames(...))` -- use the curated rowData$ID column.
+if (!"ID" %in% colnames(rowData(filtered)) || !"ID" %in% colnames(rowData(raw))) {
+  stop(sprintf("[soupx] %s: missing rowData$ID column on filtered or raw",
                args$sample_id))
 }
+toc_ids <- rowData(filtered)$ID
+tod_ids <- rowData(raw)$ID
+
+if (!identical(toc_ids, tod_ids)) {
+  common <- intersect(toc_ids, tod_ids)
+  if (length(common) < 0.9 * length(toc_ids)) {
+    stop(sprintf(
+      "[soupx] %s: only %d common features (<90%% of filtered's %d). Cannot align.",
+      args$sample_id, length(common), length(toc_ids)
+    ))
+  }
+  filtered <- filtered[match(common, toc_ids), ]
+  raw      <- raw[match(common, tod_ids), ]
+  toc      <- counts(filtered)
+  tod      <- counts(raw)
+  cat(sprintf(
+    "[soupx] %s: aligned to %d common features (filtered=%d, raw=%d)\n",
+    args$sample_id, length(common), length(toc_ids), length(tod_ids)
+  ))
+}
+
+# Force consistent rownames using Ensembl IDs (SoupX checks rownames match).
+rownames(toc) <- rowData(filtered)$ID
+rownames(tod) <- rowData(raw)$ID
+
+# Final sanity check
+if (!identical(rownames(toc), rownames(tod))) {
+  stop(sprintf("[soupx] %s: rownames still differ after alignment (bug)",
+               args$sample_id))
+}
+
+# Materialize to in-memory dgCMatrix. read10xCounts returns a TENxMatrix
+# (HDF5-backed DelayedArray) for H5 inputs, which SoupX::quickMarkers can't
+# coerce to "dMatrix" downstream. Force in-memory CsparseMatrix/dgCMatrix.
+# Memory cost: filtered ~50-150 MB; raw ~1-3 GB at 707K droplets x 19K
+# genes. Comfortable under the workstation's 258 GB budget.
+cat(sprintf("[soupx] %s: materializing matrices to dgCMatrix (in-memory sparse)\n",
+            args$sample_id))
+toc <- as(toc, "CsparseMatrix")
+if (!inherits(toc, "dgCMatrix")) toc <- as(toc, "dgCMatrix")
+tod <- as(tod, "CsparseMatrix")
+if (!inherits(tod, "dgCMatrix")) tod <- as(tod, "dgCMatrix")
 
 # ------------------------------------------------------------------
 # Build SoupChannel + cluster + estimate rho + adjust counts.

@@ -2,22 +2,34 @@
 """
 07_annotation.py — Phase 7: cell type annotation (per-tissue primary track + marker cross-check).
 
-BRAIN primary track: 3-tier CellTypist per age, locked by INSTRUCTIONS:
+BRAIN primary track: 4-tier annotation per age.
+
+  P1 is annotated by scANVI label transfer from the Rosenberg 2018 P2-brain
+  reference (whole-brain, SPLiT-seq) — Di Bella (cortex-only) mislabeled ~42%
+  of whole-brain P1 cells as erythrocyte. scANVI integrates ref+query
+  (correcting the SPLiT-seq->Flex platform shift) then transfers the published
+  Rosenberg fine label; coarser tiers are derived by deterministic grouping.
+  Runs via the run_scanvi_p1.py GPU subprocess. 4W/3mo use CellTypist (ABC).
+
+  broad    -> celltypist_broad. Derived from class per-age vocabulary
+              (abc_class_to_broad.csv for adults, rosenberg_class_to_broad.csv
+              for P1). All ages aligned at this tier — used for cross-age.
 
   class    -> canonical per-(Leiden cluster x age) label (celltypist_class).
               Assigned by MAJORITY VOTE of per-cell class predictions WITHIN
-              each (Leiden cluster x age) group. Same value for all cells in
-              the (cluster, age) group. Per-age native vocabulary:
-                P1     -> Di Bella developing-brain labels
+              each (Leiden cluster x age) group. Per-age native vocabulary:
+                P1     -> Rosenberg region-tagged class (derived from fine)
                 4W/3mo -> ABC class labels (34 categories)
               8b/8c key off this column.
 
-  subclass -> kept PER-CELL (celltypist_subclass), 4W/3mo only.
-              P1 cells get the sentinel "no_subclass_model".
+  subclass -> kept PER-CELL (celltypist_subclass).
+                P1     -> Rosenberg fine label (the real published ~65 labels)
+                4W/3mo -> ABC subclass (334)
               Consumed at the subcluster level by 7b/7d.
 
-  region   -> kept PER-CELL (celltypist_region), 4W/3mo only.
-              P1 cells get "no_region_model".
+  region   -> kept PER-CELL (celltypist_region).
+                P1     -> parsed from Rosenberg fine label prefix (CTX/CB/...)
+                4W/3mo -> ABC region (12)
               Consumed at Phase 9 for region matching against human atlases.
 
 PLACENTA primary track: STAMP reference-based Spearman correlation
@@ -168,8 +180,10 @@ MARKER_PRESENCE_THRESHOLD = 0.20   # >=20% of (cluster x age) cells must express
 
 BRAIN_GATE_CONFIG = {
     "microglia": {
+        # Cx3cr1 removed — absent from the 10x Flex Mouse Transcriptome v2 panel
+        # (verified against the probe CSV). P2ry12/Tmem119/Csf1r/Aif1 are present.
         "keywords":   ["microglia", "microglial"],
-        "markers":    ["Cx3cr1", "P2ry12", "Tmem119", "Csf1r", "Aif1"],
+        "markers":    ["P2ry12", "Tmem119", "Csf1r", "Aif1"],
         "min_present": 2,
         "demoted_to": "unassigned_immune",
     },
@@ -184,7 +198,12 @@ BRAIN_GATE_CONFIG = {
         # Word boundary handled by checking " ol " or label endings; substrings
         # of "oligodendrocyte" / "opc" / " oligo" suffice for ABC + Di Bella vocabs.
         "keywords":   ["oligodendrocyte", "opc", "oligo"],
-        "markers":    ["Mbp", "Mog", "Plp1", "Mag"],
+        # Cover the WHOLE lineage: Mbp/Mog/Plp1/Mag are MATURE-OL myelin genes;
+        # OPCs (abundant at P1, unmyelinated) express Pdgfra/Cspg4/Olig1/Olig2/
+        # Sox10 instead. A mature-only list wrongly demotes real OPCs. All 9 are
+        # in the Flex panel (verified).
+        "markers":    ["Mbp", "Mog", "Plp1", "Mag",
+                       "Pdgfra", "Cspg4", "Olig1", "Olig2", "Sox10"],
         "min_present": 1,
         "demoted_to": "unassigned_glia",
     },
@@ -193,6 +212,19 @@ BRAIN_GATE_CONFIG = {
         "markers":    ["Cldn5", "Pecam1", "Cdh5"],
         "min_present": 2,
         "demoted_to": "unassigned_vascular",
+    },
+    "erythroid": {
+        # Safety net for false erythroid calls. A cell labeled erythrocyte /
+        # blood / erythroid MUST express erythroid genes; if it doesn't, the
+        # label is spurious (e.g. Di Bella dumping whole-brain P1 neurons into
+        # "Blood: Erythrocyte"). Self-targeting: real fetal nucleated erythroid
+        # (placenta) express >=2 of these at high level and PASS; false brain
+        # calls express ~0 and get demoted. scANVI-from-Rosenberg should prevent
+        # the brain problem at source, but this guards any reference.
+        "keywords":   ["erythro", "blood"],
+        "markers":    ["Hbb-bs", "Hbb-bt", "Hba-a1", "Hba-a2", "Alas2"],
+        "min_present": 2,
+        "demoted_to": "unassigned_erythroid",
     },
 }
 
@@ -408,7 +440,140 @@ def run_celltypist_tier(adata_age, model_path, tier_label: str):
     return pd.DataFrame({"predicted": labels, "conf": conf}, index=adata_age.obs_names)
 
 
-def run_all_celltypist_tiers(adata, per_age_models: dict, table_dir: Path) -> None:
+def run_scanvi_p1_subprocess(adata_p1, scanvi_cfg: dict, seed: int,
+                             work_dir: Path):
+    """Transfer Rosenberg labels onto P1 cells via the GPU scANVI subprocess.
+
+    Mirrors the R-subprocess pattern (03_doublets.py -> run_scdblfinder.R):
+    write a temp P1 query h5ad, shell out to run_scanvi_p1.py, read back a TSV
+    of [barcode, scanvi_fine, scanvi_conf].
+
+    Returns a DataFrame indexed by P1 obs_names with columns
+      [scanvi_fine, scanvi_conf]
+    Hard-fails on any error (no silent partial labels).
+    """
+    import subprocess
+
+    ref_h5ad = scanvi_cfg.get("ref_h5ad")
+    labels_key = scanvi_cfg.get("labels_key", "rosenberg_fine")
+    if not ref_h5ad or not Path(ref_h5ad).is_file():
+        sys.exit(f"ERROR: P1 scANVI reference not found: {ref_h5ad}\n"
+                 f"  Set annotation.scanvi_p1.ref_h5ad in the YAML.")
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    query_path = work_dir / "p1_query.h5ad"
+    out_tsv    = work_dir / "p1_scanvi.tsv"
+
+    # Write a minimal P1 query: raw counts in .X, var_names = symbols, obs['pool'].
+    q = adata_p1.copy()
+    keep_obs = [c for c in ["pool", "age", "sample_id"] if c in q.obs.columns]
+    q.obs = q.obs[keep_obs].copy()
+    for attr in ("layers", "obsm", "obsp", "varm", "uns"):
+        getattr(q, attr).clear()
+    q.write_h5ad(query_path)
+    print(f"    wrote temp P1 query: {query_path} ({q.n_obs:,} cells)")
+
+    script = Path(__file__).parent / "run_scanvi_p1.py"
+    cmd = [
+        "uv", "run", "python", "-u", str(script),
+        "--query-h5ad", str(query_path),
+        "--ref-h5ad",   str(ref_h5ad),
+        "--out-tsv",    str(out_tsv),
+        "--labels-key", labels_key,
+        "--seed",       str(seed),
+    ]
+    print(f"    calling scANVI subprocess (GPU): {' '.join(cmd)}")
+    proc = subprocess.run(cmd, cwd=str(Path(__file__).parent.parent))
+    if proc.returncode != 0:
+        sys.exit(f"ERROR: run_scanvi_p1.py exited {proc.returncode}. See log above.")
+
+    if not out_tsv.is_file():
+        sys.exit(f"ERROR: scANVI subprocess produced no output: {out_tsv}")
+    res = pd.read_csv(out_tsv, sep="\t", index_col="barcode")
+
+    res = res.reindex(adata_p1.obs_names)
+    if res["scanvi_fine"].isna().any():
+        n = int(res["scanvi_fine"].isna().sum())
+        sys.exit(f"ERROR: {n} P1 cells got no scANVI label — barcode mismatch "
+                 f"between subprocess output and query.")
+    return res
+
+
+def _load_map_csv(path: Path, key_col: str, val_col: str) -> dict:
+    """Load a two-column mapping CSV into a dict. Hard-fail if missing."""
+    if not path.is_file():
+        sys.exit(f"ERROR: mapping CSV not found: {path}")
+    df = pd.read_csv(path)
+    for c in (key_col, val_col):
+        if c not in df.columns:
+            sys.exit(f"ERROR: {path} missing column '{c}' (have {list(df.columns)})")
+    return dict(zip(df[key_col].astype(str), df[val_col].astype(str)))
+
+
+def derive_p1_tiers_from_scanvi(adata, p1_mask, scanvi_res, scanvi_cfg: dict):
+    """Write P1's class_predicted / subclass / region from the transferred
+    Rosenberg fine label, using the config CSVs. P1 'subclass' = raw fine label;
+    'class' + 'region' = deterministic groupings. Mutates adata.obs for P1 rows.
+    """
+    cfg_dir = Path(scanvi_cfg.get("config_dir", "config"))
+    sub2class  = _load_map_csv(cfg_dir / "rosenberg_subclass_to_class.csv",
+                               "rosenberg_fine", "class")
+    sub2region = _load_map_csv(cfg_dir / "rosenberg_subclass_to_region.csv",
+                               "rosenberg_fine", "region")
+
+    fine = scanvi_res["scanvi_fine"].astype(str)
+    conf = scanvi_res["scanvi_conf"].astype(float)
+
+    unmapped_c = sorted(set(fine) - set(sub2class))
+    unmapped_r = sorted(set(fine) - set(sub2region))
+    if unmapped_c:
+        sys.exit(f"ERROR: transferred fine labels missing from "
+                 f"rosenberg_subclass_to_class.csv: {unmapped_c}")
+    if unmapped_r:
+        sys.exit(f"ERROR: transferred fine labels missing from "
+                 f"rosenberg_subclass_to_region.csv: {unmapped_r}")
+
+    idx = adata.obs_names[p1_mask]
+    adata.obs.loc[idx, "celltypist_class_predicted"] = fine.map(sub2class).values
+    adata.obs.loc[idx, "celltypist_class_conf"]      = conf.values
+    adata.obs.loc[idx, "celltypist_subclass"]        = fine.values
+    adata.obs.loc[idx, "celltypist_subclass_conf"]   = conf.values
+    adata.obs.loc[idx, "celltypist_region"]          = fine.map(sub2region).values
+    adata.obs.loc[idx, "celltypist_region_conf"]     = conf.values
+    print(f"    P1 tiers derived: "
+          f"{fine.map(sub2class).nunique()} classes, "
+          f"{fine.nunique()} subclasses, "
+          f"{fine.map(sub2region).nunique()} regions")
+
+
+def derive_brain_broad(adata, annot_cfg: dict) -> None:
+    """Derive celltypist_broad from canonical celltypist_class, per vocabulary.
+
+    Adult classes (ABC) map via abc_class_to_broad.csv; P1 classes (Rosenberg)
+    via rosenberg_class_to_broad.csv. Classes in neither (gate 'unassigned_*')
+    -> 'unassigned'.
+    """
+    if "celltypist_class" not in adata.obs.columns:
+        return
+    cfg_dir = Path(annot_cfg.get("scanvi_p1", {}).get("config_dir", "config"))
+    abc_csv = Path(annot_cfg.get("class_to_broad_csv", "refs/abc_class_to_broad.csv"))
+    ros_csv = cfg_dir / "rosenberg_class_to_broad.csv"
+
+    abc_map = _load_map_csv(abc_csv, "class", "broad")
+    ros_map = _load_map_csv(ros_csv, "class", "broad")
+    merged = {**abc_map, **ros_map}
+
+    cls = adata.obs["celltypist_class"].astype(str)
+    broad = cls.map(merged).fillna("unassigned")
+    adata.obs["celltypist_broad"] = pd.Categorical(broad)
+    n_unmapped = int((broad == "unassigned").sum())
+    print(f"  celltypist_broad: {adata.obs['celltypist_broad'].nunique()} classes, "
+          f"{n_unmapped} cells unmapped->unassigned (gate-demoted / unknown)")
+
+
+def run_all_celltypist_tiers(adata, per_age_models: dict, table_dir: Path,
+                             scanvi_cfg: dict = None, seed: int = 42,
+                             work_dir: Path = None) -> None:
     """Run class/subclass/region tiers per age; mutate adata.obs IN PLACE.
 
     Hard-fail if a class model is missing for any age in the data — class is
@@ -424,12 +589,19 @@ def run_all_celltypist_tiers(adata, per_age_models: dict, table_dir: Path) -> No
     print(f"  Ages in data:     {ages_in_data}")
     print(f"  Ages configured:  {sorted(per_age_models)}")
 
+    # P1 may be annotated by scANVI (Rosenberg) instead of a CellTypist model.
+    p1_uses_scanvi = bool(scanvi_cfg) and "P1" in ages_in_data
+    if p1_uses_scanvi:
+        print(f"  P1 → scANVI label transfer from {scanvi_cfg.get('ref_h5ad')}")
+
     missing_class = [a for a in ages_in_data
-                     if not per_age_models.get(a, {}).get("class")]
+                     if not per_age_models.get(a, {}).get("class")
+                     and not (a == "P1" and p1_uses_scanvi)]
     if missing_class:
         sys.exit(
             f"ERROR: no class model configured for age(s) {missing_class}.\n"
-            f"  Add annotation.celltypist_models.<age>.class to the YAML.\n"
+            f"  Add annotation.celltypist_models.<age>.class to the YAML\n"
+            f"  (or annotation.scanvi_p1 for P1).\n"
             f"  Refusing to leave cells without a class label."
         )
 
@@ -448,6 +620,13 @@ def run_all_celltypist_tiers(adata, per_age_models: dict, table_dir: Path) -> No
         age_mask = adata.obs["age"].astype(str) == age
         adata_age = adata[age_mask].copy()
         print(f"    {adata_age.n_obs:,} cells")
+
+        # P1 via scANVI (Rosenberg): transfer fine label, derive class/subclass/region.
+        if age == "P1" and p1_uses_scanvi:
+            wd = work_dir or (table_dir.parent / "h5ad" / "_scanvi_p1_work")
+            scanvi_res = run_scanvi_p1_subprocess(adata_age, scanvi_cfg, seed, wd)
+            derive_p1_tiers_from_scanvi(adata, age_mask.values, scanvi_res, scanvi_cfg)
+            continue
 
         for tier, (label_col, conf_col) in (
             ("class",    ("celltypist_class_predicted", "celltypist_class_conf")),
@@ -641,7 +820,7 @@ def apply_brain_marker_gate(adata, audit_csv: Path) -> None:
         else:
             demote_count += 1
             # Demote on obs. Cast to object to avoid Categorical assignment errors.
-            if pd.api.types.is_categorical_dtype(adata.obs["celltypist_class"]):
+            if isinstance(adata.obs["celltypist_class"].dtype, pd.CategoricalDtype):
                 adata.obs["celltypist_class"] = adata.obs["celltypist_class"].astype("object")
             adata.obs.loc[mask, "celltypist_class"] = gate_cfg["demoted_to"]
 
@@ -1215,6 +1394,13 @@ def plot_class_umap(adata, out_label, out_conf):
         _umap_save(adata, "celltypist_class_conf",
                    "celltypist class confidence (per-cell max prob)",
                    out_conf, figsize=(7, 5), color_map="viridis")
+    # Per-age faceted class UMAP — the combined plot mixes ABC (adult) and
+    # Rosenberg (P1) vocabularies and is unreadable; per-age panels are clean.
+    # 'celltypist_class' has no sentinel (every cell has a class), so pass a
+    # dummy sentinel that never matches.
+    out_by_age = Path(str(out_label).replace(".png", "_by_age.png"))
+    plot_per_age_umap(adata, "celltypist_class", out_by_age,
+                      "celltypist_class", sentinel="\x00__never__\x00")
 
 
 def plot_per_age_umap(adata, col, out, title_prefix, sentinel):
@@ -1584,7 +1770,12 @@ def main():
             print(f"  No CellTypist models configured — skipping CellTypist track.")
             print(f"  Provisional marker-based labels will be assigned in step [3/4].")
         else:
-            run_all_celltypist_tiers(adata, per_age_models, table_dir)
+            scanvi_cfg = annot_cfg.get("scanvi_p1") or None
+            seed = int(cfg.get("random_seed", 42))
+            work_dir = Path(cfg["results_dir"]) / "h5ad" / "_scanvi_p1_work"
+            run_all_celltypist_tiers(adata, per_age_models, table_dir,
+                                     scanvi_cfg=scanvi_cfg, seed=seed,
+                                     work_dir=work_dir)
             audit_path = table_dir / "07_annotation_class_per_cluster_age.csv"
             assign_class_per_cluster_age(adata, audit_csv=audit_path)
             apply_brain_marker_gate(adata, audit_csv=audit_path)
@@ -1592,6 +1783,9 @@ def main():
                 audit_csv=audit_path,
                 sanity_csv=table_dir / "07_annotation_age_composition_sanity.csv",
             )
+            # Derive the broad tier from canonical class (per-age vocabulary:
+            # ABC for adults, Rosenberg for P1). Self-contained 4-tier object.
+            derive_brain_broad(adata, annot_cfg)
 
     elif tissue == "placenta":
         print(f"\n[2/4] PLACENTA primary track: STAMP Spearman correlation...")
@@ -1652,6 +1846,12 @@ def main():
         plot_class_umap(adata,
                         plot_dir / "umap_celltypist_class.png",
                         plot_dir / "umap_celltypist_class_confidence.png")
+        if "celltypist_broad" in adata.obs.columns:
+            n = adata.obs["celltypist_broad"].nunique()
+            _umap_save(adata, "celltypist_broad",
+                       f"celltypist_broad ({n} classes; all ages aligned)",
+                       plot_dir / "umap_celltypist_broad.png",
+                       legend_loc="right margin", legend_fontsize=7)
         plot_per_age_umap(adata, "celltypist_subclass",
                           plot_dir / "umap_celltypist_subclass_by_age.png",
                           "celltypist_subclass", NO_SUBCLASS)

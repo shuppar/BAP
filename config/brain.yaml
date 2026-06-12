@@ -334,6 +334,20 @@ pathways:
   min_genes_per_set: 5
   use_builtin_stress_sets: false
   run_tf_activity: false
+integration:
+  n_hvg: 3000
+  batch_key: pool
+scvi:
+  n_latent: 30
+  n_layers: 2
+  max_epochs: 400
+  batch_size: 1024
+  early_stopping_patience: 30
+  condition_cell_cycle: false
+clustering:
+  n_neighbors: 30
+  min_dist: 0.3
+  spread: 1.2
 random_seed: 42
 annotation:
   celltypist_models:

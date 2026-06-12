@@ -163,7 +163,11 @@ def plot_umap_clusters(adata, obs_key: str, title: str, out: Path) -> None:
     fig, ax = plt.subplots(figsize=(6, 5))
     sc.pl.umap(adata, color=obs_key, ax=ax, show=False, frameon=False,
                title=f"{title} ({n} clusters)", legend_loc="on data",
-               legend_fontsize=6, size=6)
+               legend_fontsize=6, size=6, alpha=0.7)
+    # Rasterize the scatter points (keeps text/axes vector) — standard for
+    # large-cell-count figures; keeps PDF size sane on 600K+ points.
+    for coll in ax.collections:
+        coll.set_rasterized(True)
     fig.tight_layout()
     fig.savefig(out, dpi=130, bbox_inches="tight")
     plt.close(fig)
@@ -260,6 +264,7 @@ def cluster_qc_table(adata, obs_key: str) -> pd.DataFrame:
     obs = adata.obs
     metrics = [m for m in ["n_genes_by_counts", "total_counts", "pct_counts_mt",
                             "pct_counts_hemo"] if m in obs.columns]
+    has_cycling = "cycling" in obs.columns
     rows = []
     for c in sorted(obs[obs_key].unique(), key=int):
         mask = obs[obs_key] == c
@@ -267,6 +272,12 @@ def cluster_qc_table(adata, obs_key: str) -> pd.DataFrame:
                "n_samples": obs.loc[mask, "sample_id"].nunique()}
         for m in metrics:
             row[f"median_{m}"] = round(float(obs.loc[mask, m].median()), 3)
+        if has_cycling:
+            # Fraction of this cluster that is cycling — a cluster near 1.0 here
+            # may be a proliferating subset of an otherwise-known cell type
+            # rather than a distinct identity. Flag for review at annotation.
+            row["frac_cycling"] = round(
+                float((obs.loc[mask, "cycling"] == "cycling").mean()), 3)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -308,9 +319,34 @@ def main():
     if "X_scVI" not in adata.obsm:
         sys.exit("ERROR: X_scVI not in adata.obsm. Re-run Phase 5.")
 
-    n_neighbors = min(15, max(5, adata.n_obs // 100))
-    print(f"\n[2/4] Building neighbor graph (n_neighbors={n_neighbors})...")
-    sc.pp.neighbors(adata, use_rep="X_scVI", n_neighbors=n_neighbors, random_state=seed)
+    # Binary cycling label derived from the per-cell phase (G1/S/G2M from Phase 4).
+    # This is a LABEL only — it does not feed scVI or clustering; it just lets us
+    # color UMAPs and compute a per-cluster cycling fraction (catches clusters
+    # that are merely proliferating cells of an otherwise-known type). The
+    # per-cell S_score/G2M_score/phase/cc_difference remain in obs untouched.
+    if "phase" in adata.obs.columns:
+        adata.obs["cycling"] = (
+            adata.obs["phase"].astype(str).ne("G1")
+            .map({True: "cycling", False: "non_cycling"})
+            .astype("category")
+        )
+        frac = (adata.obs["cycling"] == "cycling").mean()
+        print(f"  Added 'cycling' label: {frac:.1%} of cells cycling (S or G2M)")
+    else:
+        print("  [warn] 'phase' not in obs — skipping 'cycling' label. Re-run Phase 4 "
+              "if you want per-cell cycle annotation.")
+
+    # Reuse the neighbor graph computed in Phase 5 (Option B): clustering runs
+    # on the SAME graph the UMAP was built from, so cluster labels and the
+    # embedding are consistent. Phase 5 persists the graph in adata.obsp.
+    if "neighbors" not in adata.uns or "connectivities" not in adata.obsp:
+        sys.exit(
+            "ERROR: no neighbor graph found in the integrated h5ad.\n"
+            "  Phase 6 reuses the graph built in Phase 5 (Option B). Re-run "
+            "Phase 5 (05_integration.py) — it computes and saves the graph."
+        )
+    n_neighbors = adata.uns["neighbors"]["params"].get("n_neighbors", "?")
+    print(f"\n[2/4] Reusing Phase 5 neighbor graph (n_neighbors={n_neighbors})")
 
     print(f"\n[3/4] Multi-resolution Leiden sweep: {RESOLUTIONS}...")
     resolution_df = run_leiden(adata, RESOLUTIONS, seed)
@@ -333,6 +369,8 @@ def main():
     adata.obs["leiden"] = adata.obs[chosen_key].astype("category").copy()
     n_chosen = adata.obs["leiden"].nunique()
     print(f"  Clusters at chosen resolution: {n_chosen}")
+    # NOTE: UMAP is NOT recomputed here. The embedding (X_umap) comes from
+    # Phase 5, built on the same neighbor graph clustering just used (Option B).
 
     resolution_df.to_csv(table_dir / "06_clustering_summary.csv", index=False)
     cluster_qc_table(adata, "leiden").to_csv(
@@ -351,6 +389,17 @@ def main():
     plot_umap_clusters(adata, "leiden",
                        title=f"Leiden res={chosen_res} (chosen)",
                        out=plot_dir / "umap_leiden_chosen.png")
+    # Cycling label UMAP — visual companion to frac_cycling in the QC table.
+    if "cycling" in adata.obs.columns:
+        fig, ax = plt.subplots(figsize=(6, 5))
+        sc.pl.umap(adata, color="cycling", ax=ax, show=False, frameon=False,
+                   title="Cycling (S/G2M) vs non-cycling (G1)", size=6, alpha=0.7,
+                   palette={"cycling": "#d62728", "non_cycling": "#cccccc"})
+        for coll in ax.collections:
+            coll.set_rasterized(True)
+        fig.tight_layout()
+        fig.savefig(plot_dir / "umap_cycling.png", dpi=130, bbox_inches="tight")
+        plt.close(fig)
     plot_clustree(adata, resolution_df, plot_dir / "clustree.png")
     plot_cluster_qc(adata, "leiden", plot_dir / "cluster_qc_metrics.png")
     plot_cluster_composition(adata, "leiden",
