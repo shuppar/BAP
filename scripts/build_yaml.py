@@ -47,11 +47,24 @@ SHARED_CONFIG = {
         "x_linked": ["Xist"],
     },
     "composition": {
-        # Phase 8a: min donors (samples) per group to attempt scCODA. Below 3 the
-        # Bayesian variance estimate is essentially unconstrained. Lower to 2 to
-        # attempt n=2 groups (e.g. P1 Late Stress) — those run flagged
-        # 'unreliable_n<3' in composition_results.csv. CLI --min-donors overrides.
-        "min_donors": 3,
+        # Phase 8a (propeller): min donors/group to RUN a stratum (`min_donors`),
+        # and the threshold at/above which it's 'ok' rather than 'low_n'
+        # (`reliable_donors`). We RUN at n>=2 so P1 Late Stress and the sex-specific
+        # strata are attempted, but FLAG any stratum with a group <3 as low_n.
+        # CLI --min-donors / --reliable-donors override. (propeller replaced scCODA;
+        # limma's empirical-Bayes moderation makes n=2 usable-but-weak, hence
+        # run-and-flag rather than hard-skip.)
+        "min_donors": 2,
+        "reliable_donors": 3,
+    },
+    # Phase 8 sex stratification — ONE declarative dimension applied to EVERY
+    # contrast in EVERY 8x stage (8a..8g), via _utils.iter_strata. 'combined' =
+    # sex stays a covariate (pooled run); 'M'/'F' = subset to that sex (sex then
+    # auto-drops from the design). This supersedes the standalone
+    # within_age_sex_stratified contrast (which only covered Early-vs-Relaxed).
+    # sex-specific strata are underpowered (~halved n) and get flagged low_n.
+    "strata": {
+        "sex": ["combined", "M", "F"],
     },
     "pathways": {
         # Phase 8c: GSEA on DE stats. Gene sets come from a single MSigDB export

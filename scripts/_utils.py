@@ -58,7 +58,7 @@ def load_config(path: Path) -> dict:
         cfg["samples"] = src_cfg["samples"]
         # Inherit tissue-level blocks the dev config didn't override.
         for key in ("annotation", "reference", "contrasts", "stress_focused_cell_types",
-                    "composition", "pathways"):
+                    "composition", "pathways", "strata"):
             if key not in cfg and key in src_cfg:
                 cfg[key] = src_cfg[key]
 
@@ -307,3 +307,121 @@ def load_contrasts(cfg: dict, kind: str = "de") -> dict:
     if not validated:
         sys.exit(f"ERROR: no contrasts of kind '{kind}' found in config.")
     return validated
+
+
+# ============================================================================
+# Analysis strata (Phase 8) — orthogonal donor-subset dimension
+# ============================================================================
+
+def iter_strata(cfg: dict, axis: str = "sex") -> list:
+    """Return the Phase 8 strata for `axis`, shared across ALL 8x stages.
+
+    A stratum is an orthogonal donor-subset dimension applied to EVERY contrast,
+    so the contrast set and the strata are both declared once (in the YAML) and
+    every phase inherits them — no per-phase hardcoding, and no bespoke
+    "within_age_sex_stratified" contrast.
+
+    Reads cfg['strata'][axis] (default ['combined'] if the block is absent).
+    Returns a list of (label, value):
+      - value is None      -> no subset; `axis` stays a covariate in the design
+                              (the pooled 'combined' run).
+      - value is not None  -> subset obs to obs[axis] == value; `axis` then
+                              becomes constant and is auto-dropped from the design
+                              by each phase's existing "keep only varying
+                              covariates" step.
+
+    Each phase applies the subset itself (phases hold obs differently) and tags
+    every output row/path with `label`. 8f/8g inherit via the `sex` column that
+    8b/8c write.
+    """
+    strata = (cfg.get("strata") or {}).get(axis, ["combined"])
+    out = []
+    for s in strata:
+        s = str(s)
+        out.append(("combined", None) if s.lower() == "combined" else (s, s))
+    return out
+
+
+# ============================================================================
+# Parallel map — the standard way to parallelize repeated work in phase scripts
+# ============================================================================
+
+def parallel_map(fn, items, n_jobs: int = 8, use_threads: bool = True,
+                 progress_every: int = 25, desc: str = "jobs"):
+    """Run `fn(item)` over `items` concurrently; yield (item, result, error).
+
+    THE standard helper for parallelizing any phase-script loop that repeatedly
+    calls a subprocess (R workers) or a heavy function. Project rule: a bare
+    for-loop that launches one subprocess per item is a performance bug — use
+    this and expose a `--n-jobs` CLI flag instead.
+
+      - use_threads=True (default): ThreadPoolExecutor — correct for subprocess /
+        I/O-bound work. The call blocks on the child process, which releases the
+        GIL, so workers genuinely overlap. `fn` may be a closure (no pickling).
+      - use_threads=False: ProcessPoolExecutor — for CPU-bound pure-Python work.
+        `fn` and `items` must be picklable (no closures/lambdas).
+
+    Exceptions from `fn` are CAPTURED (returned as the 3rd tuple element, a str),
+    NOT raised — one bad item doesn't abort the batch; the caller decides what to
+    do with failures. Results arrive in completion order. Prints '<desc> k/N done'
+    every `progress_every` lines (set 0 to silence).
+    """
+    from concurrent.futures import (ThreadPoolExecutor, ProcessPoolExecutor,
+                                    as_completed)
+    items = list(items)
+    n = len(items)
+    if n == 0:
+        return
+    n_jobs = max(1, int(n_jobs))
+
+    done = 0
+    if n_jobs == 1:                      # serial fallback (debugging / n_jobs=1)
+        for it in items:
+            done += 1
+            if progress_every and (done % progress_every == 0 or done == n):
+                print(f"    {desc} {done}/{n} done")
+            try:
+                yield it, fn(it), None
+            except Exception as e:
+                yield it, None, str(e)
+        return
+
+    Executor = ThreadPoolExecutor if use_threads else ProcessPoolExecutor
+    with Executor(max_workers=n_jobs) as ex:
+        # Submit fn directly (not a wrapper closure) so ProcessPoolExecutor can
+        # pickle the task; capture per-item errors when reading the result.
+        fut_to_item = {ex.submit(fn, it): it for it in items}
+        for fut in as_completed(fut_to_item):
+            it = fut_to_item[fut]
+            done += 1
+            if progress_every and (done % progress_every == 0 or done == n):
+                print(f"    {desc} {done}/{n} done")
+            try:
+                yield it, fut.result(), None
+            except Exception as e:
+                yield it, None, str(e)
+
+
+# ============================================================================
+# Annotation cleanup — exclude gate-demoted 'unassigned*' cells (Phase 8)
+# ============================================================================
+
+def unassigned_mask(obs, label_cols):
+    """Boolean mask of gate-demoted 'unassigned*' cells across `label_cols`
+    (case-insensitive prefix match).
+
+    These are cells the Phase-7 marker gate could not confidently annotate
+    (unassigned_immune / _glia / _vascular / _erythroid, collapsed to
+    'unassigned' at the broad tier). They are NOT real cell types, so they're
+    excluded from composition / DE / pathway analysis the same way contaminants
+    are — a shift in an 'unassigned' bucket is an annotation artifact, not
+    biology. Shared rule across 8a/8b/8c so the cleaned denominator is identical.
+
+    Returns a boolean pandas Series aligned to obs.index (True = drop).
+    """
+    import pandas as pd
+    mask = pd.Series(False, index=obs.index)
+    for c in label_cols:
+        if c in obs.columns:
+            mask = mask | obs[c].astype(str).str.lower().str.startswith("unassigned")
+    return mask

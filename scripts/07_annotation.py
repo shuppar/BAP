@@ -533,17 +533,26 @@ def derive_p1_tiers_from_scanvi(adata, p1_mask, scanvi_res, scanvi_cfg: dict):
         sys.exit(f"ERROR: transferred fine labels missing from "
                  f"rosenberg_subclass_to_region.csv: {unmapped_r}")
 
+    # scanvi_res is already reindexed to the P1 obs_names by the subprocess
+    # wrapper. Assign by INDEX (label-aligned) rather than .values (positional)
+    # so a row-order difference can never silently misalign labels to cells.
+    cls  = fine.map(sub2class)
+    reg  = fine.map(sub2region)
+    # guard: scanvi_res index must exactly cover the P1 cells
     idx = adata.obs_names[p1_mask]
-    adata.obs.loc[idx, "celltypist_class_predicted"] = fine.map(sub2class).values
-    adata.obs.loc[idx, "celltypist_class_conf"]      = conf.values
-    adata.obs.loc[idx, "celltypist_subclass"]        = fine.values
-    adata.obs.loc[idx, "celltypist_subclass_conf"]   = conf.values
-    adata.obs.loc[idx, "celltypist_region"]          = fine.map(sub2region).values
-    adata.obs.loc[idx, "celltypist_region_conf"]     = conf.values
+    if set(scanvi_res.index) != set(idx):
+        sys.exit("ERROR: scANVI result index does not match P1 cells "
+                 f"({len(set(scanvi_res.index))} vs {len(set(idx))} barcodes).")
+    adata.obs.loc[scanvi_res.index, "celltypist_class_predicted"] = cls
+    adata.obs.loc[scanvi_res.index, "celltypist_class_conf"]      = conf
+    adata.obs.loc[scanvi_res.index, "celltypist_subclass"]        = fine
+    adata.obs.loc[scanvi_res.index, "celltypist_subclass_conf"]   = conf
+    adata.obs.loc[scanvi_res.index, "celltypist_region"]          = reg
+    adata.obs.loc[scanvi_res.index, "celltypist_region_conf"]     = conf
     print(f"    P1 tiers derived: "
-          f"{fine.map(sub2class).nunique()} classes, "
+          f"{cls.nunique()} classes, "
           f"{fine.nunique()} subclasses, "
-          f"{fine.map(sub2region).nunique()} regions")
+          f"{reg.nunique()} regions")
 
 
 def derive_brain_broad(adata, annot_cfg: dict) -> None:
@@ -552,9 +561,17 @@ def derive_brain_broad(adata, annot_cfg: dict) -> None:
     Adult classes (ABC) map via abc_class_to_broad.csv; P1 classes (Rosenberg)
     via rosenberg_class_to_broad.csv. Classes in neither (gate 'unassigned_*')
     -> 'unassigned'.
+
+    broad is REGION-FREE (the coarsest tier, for cross-age alignment): the ABC
+    map yields region-tagged values like "Excitatory neurons (CB)" while the
+    Rosenberg map yields plain "Excitatory neurons". We strip the trailing
+    " (...)" so both vocabularies collapse to the same coarse classes
+    (Excitatory neurons, Inhibitory neurons, ...). Region detail lives in the
+    separate celltypist_region tier.
     """
     if "celltypist_class" not in adata.obs.columns:
         return
+    import re
     cfg_dir = Path(annot_cfg.get("scanvi_p1", {}).get("config_dir", "config"))
     abc_csv = Path(annot_cfg.get("class_to_broad_csv", "refs/abc_class_to_broad.csv"))
     ros_csv = cfg_dir / "rosenberg_class_to_broad.csv"
@@ -563,11 +580,17 @@ def derive_brain_broad(adata, annot_cfg: dict) -> None:
     ros_map = _load_map_csv(ros_csv, "class", "broad")
     merged = {**abc_map, **ros_map}
 
+    # strip trailing " (region)" so broad is region-free + cross-age aligned
+    def _coarse(b):
+        return re.sub(r"\s*\([^)]*\)\s*$", "", str(b)).strip()
+    merged = {k: _coarse(v) for k, v in merged.items()}
+
     cls = adata.obs["celltypist_class"].astype(str)
     broad = cls.map(merged).fillna("unassigned")
     adata.obs["celltypist_broad"] = pd.Categorical(broad)
     n_unmapped = int((broad == "unassigned").sum())
-    print(f"  celltypist_broad: {adata.obs['celltypist_broad'].nunique()} classes, "
+    print(f"  celltypist_broad (region-free): "
+          f"{adata.obs['celltypist_broad'].nunique()} classes, "
           f"{n_unmapped} cells unmapped->unassigned (gate-demoted / unknown)")
 
 
@@ -623,8 +646,9 @@ def run_all_celltypist_tiers(adata, per_age_models: dict, table_dir: Path,
 
         # P1 via scANVI (Rosenberg): transfer fine label, derive class/subclass/region.
         if age == "P1" and p1_uses_scanvi:
-            wd = work_dir or (table_dir.parent / "h5ad" / "_scanvi_p1_work")
-            scanvi_res = run_scanvi_p1_subprocess(adata_age, scanvi_cfg, seed, wd)
+            if work_dir is None:
+                sys.exit("ERROR: work_dir not provided for P1 scANVI step.")
+            scanvi_res = run_scanvi_p1_subprocess(adata_age, scanvi_cfg, seed, work_dir)
             derive_p1_tiers_from_scanvi(adata, age_mask.values, scanvi_res, scanvi_cfg)
             continue
 
@@ -1418,16 +1442,22 @@ def plot_per_age_umap(adata, col, out, title_prefix, sentinel):
             ages.append(a)
     if not ages:
         return
+    # Labels ON the clusters (per panel) — a side legend either gets suppressed
+    # for many-category columns or squishes the panels. On-data labels make each
+    # panel self-documenting and keep panels square. Subclass (~65/334 cats) is
+    # too dense for on-data text, so it falls back to no labels (the by-age
+    # split is still useful to see structure; subclass detail lives in tables).
     n_categories = adata.obs[col].astype(str).nunique()
-    legend = None if n_categories > 30 else "right margin"
+    legend = "on data" if n_categories <= 40 else None
     ncols = len(ages)
-    fig, axes = plt.subplots(1, ncols, figsize=(8 * ncols, 6))
+    fig, axes = plt.subplots(1, ncols, figsize=(7 * ncols, 7))
     if ncols == 1:
         axes = [axes]
     for ax, age in zip(axes, ages):
         sub = adata[age_col == age].copy()
         sc.pl.umap(sub, color=col, ax=ax, show=False, frameon=False,
-                   size=6, legend_loc=legend, legend_fontsize=5,
+                   size=6, legend_loc=legend, legend_fontsize=6,
+                   legend_fontoutline=2,
                    title=f"{title_prefix} ({age})  n={sub.n_obs:,}")
     fig.tight_layout(); fig.savefig(out, dpi=140, bbox_inches="tight"); plt.close(fig)
 
@@ -1851,7 +1881,8 @@ def main():
             _umap_save(adata, "celltypist_broad",
                        f"celltypist_broad ({n} classes; all ages aligned)",
                        plot_dir / "umap_celltypist_broad.png",
-                       legend_loc="right margin", legend_fontsize=7)
+                       figsize=(11, 6),
+                       legend_loc="right margin", legend_fontsize=8)
         plot_per_age_umap(adata, "celltypist_subclass",
                           plot_dir / "umap_celltypist_subclass_by_age.png",
                           "celltypist_subclass", NO_SUBCLASS)

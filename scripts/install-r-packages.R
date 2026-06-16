@@ -7,125 +7,155 @@
 #   - BiocManager        : Bioconductor installer
 #   - scDblFinder        : doublet detection (primary, called as subprocess from Python)
 #   - SoupX              : ambient RNA correction Phase 1 (replaces CellBender)
-#   - scran              : quickCluster for SoupX + normalization for scDblFinder
+#   - scran / scuttle    : quickCluster for SoupX + normalization/QC for scDblFinder
 #   - edgeR              : DE cross-check (secondary)
 #   - jsonlite           : JSON I/O for Python <-> R data exchange
 #   - Matrix             : sparse matrices (required by scDblFinder)
+#   - data.table         : fast tables
 #   - SingleCellExperiment : SCE object format (scDblFinder input)
-#   - DropletUtils       : 10x-format I/O on the R side
+#   - DropletUtils       : 10x-format I/O on the R side (SoupX)
+#   - optparse           : CLI parsing in run_*.R subprocess scripts
 #   - speckle / limma    : propeller composition analysis (Phase 8a)
 #   - msigdbr            : MSigDB gene sets for Phase 8c GSEA (fetch_genesets.R)
+#
+# SELF-HEALING (added 2026-06-14): the declared lists below are the single source
+# of truth. On EVERY run — fresh init OR restore-from-lock — the script installs
+# any declared package that isn't actually present, then re-snapshots. This fixes
+# the failure mode where a package added to this list never got installed because
+# renv.lock predated it and `renv::restore()` only installs what the lock names.
+# So: add a package here, re-run setup-remote.sh, done.
 #
 # NOTE: CellChat dropped — 8e cell-cell communication is LIANA+ in Python.
 # CellChat pulls heavy plotting transitive deps (fs, ragg, sass, ggrastr) that
 # need Ubuntu system libs not in setup-remote.sh, and we don't use it.
 #
-# All packages installed into a project-local library managed by renv,
-# so the system R installation isn't touched.
+# All packages install into a project-local library managed by renv, so the
+# system R installation isn't touched.
 
-# -- 0. Fail loudly on any error --
+# -- 0. Fail loudly on any error (dropped before the verify loop) --
 options(error = function() {
   traceback(2)
   if (!interactive()) quit(status = 1)
 })
 
-# -- 1. Tell renv where to put things --
-# Use a project-local library. Avoids polluting system R.
+# -- 1. Declared package lists — SINGLE SOURCE OF TRUTH --
+# To add a package: put it in the right list and re-run. The top-up step (§6)
+# installs it even if renv.lock already exists.
+CRAN_PACKAGES <- c(
+  "jsonlite",       # JSON I/O for Python <-> R bridge
+  "Matrix",         # sparse matrix support
+  "data.table",     # fast tables
+  "optparse",       # CLI parsing in run_*.R (scDblFinder/SoupX/propeller)
+  "msigdbr"         # MSigDB gene sets for fetch_genesets.R (Phase 8c)
+)
+BIOC_PACKAGES <- c(
+  "scDblFinder",          # Phase 3 doublets
+  "edgeR",                # DE cross-check
+  "SingleCellExperiment", # SCE container
+  "DropletUtils",         # 10x I/O (SoupX)
+  "scran",                # quickCluster (SoupX) + normalization (scDblFinder)
+  "scuttle",              # QC helpers used by scDblFinder
+  "SoupX",                # Phase 1 ambient RNA correction
+  "speckle",              # propeller — Phase 8a composition (replaces scCODA)
+  "limma"                 # empirical-Bayes moderation (propeller dependency)
+)
+# Everything the pipeline actually loads — used by the top-up and verify steps.
+REQUIRED <- c(CRAN_PACKAGES, BIOC_PACKAGES)
+
+# Bioconductor release pinned to the R version. 3.21 supports R 4.5.x.
+# Update when bumping R (R 4.4 -> 3.19, R 4.5 -> 3.21).
+BIOC_VERSION <- "3.21"
+
+# -- 2. renv library location + Suggests-skip + bundled libuv --
+# Project-local library, so system R is untouched.
 RENV_PATHS_ROOT <- file.path(getwd(), ".renv-cache")
 Sys.setenv(RENV_PATHS_ROOT = RENV_PATHS_ROOT)
+# Belt-and-suspenders for the fs -> libuv-dev system-lib chain (project doc §29).
+Sys.setenv(USE_BUNDLED_LIBUV = "1")
 
-# -- 2. Bootstrap renv itself --
+# -- 3. Bootstrap renv itself --
 if (!requireNamespace("renv", quietly = TRUE)) {
   message("[setup] Installing renv from CRAN...")
   install.packages("renv", repos = "https://cloud.r-project.org")
 }
 
-# -- 3. Initialize / restore renv project --
-# If renv.lock exists, restore from it (reproducible install).
-# Otherwise, initialize a new renv project and install packages fresh.
+# -- 4. Initialize / restore the renv project --
 if (file.exists("renv.lock")) {
   message("[setup] renv.lock found — restoring exact package versions...")
   renv::restore(prompt = FALSE)
 } else {
   message("[setup] No renv.lock — initializing new renv project...")
   renv::init(bare = TRUE, force = TRUE)
+}
 
-  # -- 4. Install BiocManager (gateway to Bioconductor) --
+# Skip Suggests for ALL installs in this project (Depends/Imports/LinkingTo only).
+# Prevents speckle/SoupX/etc. pulling Seurat -> shiny -> bslib -> fs -> libuv-dev
+# (project doc §29). persist=TRUE writes it to renv/settings.dcf.
+renv::settings$package.dependency.fields(
+  c("Depends", "Imports", "LinkingTo"), persist = TRUE
+)
+
+# -- 5. Ensure BiocManager is present + the Bioc version is pinned --
+# Needed by the top-up below on BOTH branches (restore path may lack it).
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
   message("[setup] Installing BiocManager...")
   install.packages("BiocManager", repos = "https://cloud.r-project.org")
+}
+BiocManager::install(version = BIOC_VERSION, ask = FALSE, update = FALSE)
 
-  # Pin Bioconductor version. 3.21 is the release that supports R 4.5
-  # (R 4.5.x → Bioconductor 3.21). 3.19 is for R 4.4 and will fail on R 4.5+.
-  # Update this when bumping R.
-  BIOC_VERSION <- "3.21"
-  BiocManager::install(version = BIOC_VERSION, ask = FALSE, update = FALSE)
+# -- 6. TOP-UP: install any declared package that isn't actually present --
+# On a fresh init this installs everything; on a restore it fills only the gaps
+# (e.g. a package added to the lists above after renv.lock was written).
+missing <- Filter(function(p) !requireNamespace(p, quietly = TRUE), REQUIRED)
+if (length(missing) > 0) {
+  miss_cran <- intersect(missing, CRAN_PACKAGES)
+  miss_bioc <- intersect(missing, BIOC_PACKAGES)
+  if (length(miss_cran)) {
+    message("[setup] Installing missing CRAN: ", paste(miss_cran, collapse = ", "))
+    install.packages(miss_cran, repos = "https://cloud.r-project.org")
+  }
+  if (length(miss_bioc)) {
+    message("[setup] Installing missing Bioconductor: ", paste(miss_bioc, collapse = ", "))
+    BiocManager::install(miss_bioc, ask = FALSE, update = FALSE)
+  }
 
-  # -- 5. Install CRAN packages --
-  cran_packages <- c(
-    "jsonlite",       # JSON I/O for Python <-> R bridge
-    "Matrix",         # sparse matrix support
-    "data.table",     # fast tables
-    "optparse",       # CLI parsing in R scripts
-    "msigdbr"         # MSigDB gene sets for fetch_genesets.R (Phase 8c)
-  )
-  message("[setup] Installing CRAN packages: ", paste(cran_packages, collapse = ", "))
-  install.packages(cran_packages, repos = "https://cloud.r-project.org")
-
-  # -- 6. Install Bioconductor packages --
-  bioc_packages <- c(
-    "scDblFinder",
-    "edgeR",
-    "SingleCellExperiment",
-    "DropletUtils",
-    "scran",          # quickCluster for SoupX + normalization for scDblFinder
-    "scuttle",        # used by scDblFinder for QC
-    "SoupX",          # Phase 1 ambient RNA correction (replaces CellBender)
-    "speckle",        # propeller — Phase 8a composition (replaces scCODA)
-    "limma"           # required by propeller (empirical-Bayes moderation)
-  )
-  message("[setup] Installing Bioconductor packages: ", paste(bioc_packages, collapse = ", "))
-  BiocManager::install(bioc_packages, ask = FALSE, update = FALSE)
-
-  # -- 7. Snapshot for reproducibility --
-  # Writes renv.lock with exact versions of every installed package.
-  # COMMIT renv.lock TO GIT.
-  #
-  # Wrapped in tryCatch because transitive plotting deps (ragg via scater, etc.)
-  # can fail to compile if a system lib is missing. Those deps are NEVER called
-  # by our pipeline; snapshotting them is bookkeeping. If it fails, log and
-  # continue — the verification step below confirms the packages we actually
-  # use are loadable. Regenerate renv.lock manually later if needed:
-  #   Rscript -e 'renv::snapshot(prompt=FALSE)'
-  message("[setup] Writing renv.lock...")
+  # -- 7. Snapshot so renv.lock reflects the now-complete library --
+  # COMMIT renv.lock TO GIT. Wrapped in tryCatch because transitive plotting
+  # deps can fail to compile if a system lib is missing; those are never called
+  # by our pipeline, so a snapshot failure is non-critical (the verify loop
+  # below confirms the packages we actually use are loadable).
+  message("[setup] Packages changed — writing renv.lock...")
   tryCatch(
     renv::snapshot(prompt = FALSE),
     error = function(e) {
       message("[setup] WARN: renv::snapshot failed — continuing.")
       message("[setup] Reason: ", conditionMessage(e))
-      message("[setup] Pipeline packages will be verified next; the lockfile")
-      message("[setup] is non-critical (reproducibility metadata only).")
+      message("[setup] Regenerate later with: Rscript -e 'renv::snapshot(prompt=FALSE)'")
     }
   )
+} else {
+  message("[setup] All declared packages already present — nothing to install.")
 }
 
 # -- 8. Drop the bail-on-error handler before verify --
-# We want the verify loop to test EVERY required package and report all that
-# fail, not bail on the first one.
+# Test EVERY required package and report all failures, not just the first.
 options(error = NULL)
 
-# -- 9. Sanity check: load every package once to confirm it works --
+# -- 9. Sanity check: load every required package once --
 message("[setup] Verifying packages load correctly...")
-required <- c("scDblFinder", "edgeR", "jsonlite",
-              "SingleCellExperiment", "DropletUtils", "scran", "SoupX",
-              "speckle", "limma", "msigdbr")
-for (pkg in required) {
+failed <- character(0)
+for (pkg in REQUIRED) {
   ok <- suppressMessages(requireNamespace(pkg, quietly = TRUE))
-  if (!ok) {
-    stop(sprintf("[setup] FAILED to load %s after install", pkg))
+  if (ok) {
+    message(sprintf("  OK %s", pkg))
+  } else {
+    failed <- c(failed, pkg)
+    message(sprintf("  FAIL %s", pkg))
   }
-  message(sprintf("  ✓ %s", pkg))
+}
+if (length(failed) > 0) {
+  stop("[setup] FAILED to load after install: ", paste(failed, collapse = ", "))
 }
 
 message("\n[setup] R environment ready.")
-message("[setup] To use from R: setwd(<project>) and source this script's directory.")
-message("[setup] To regenerate lock file after adding packages: renv::snapshot()")
+message("[setup] Regenerate lock file after adding packages: renv::snapshot()")

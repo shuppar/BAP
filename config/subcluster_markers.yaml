@@ -4,570 +4,302 @@
 #
 # Structure:
 #   subcluster_markers:
-#     <slug>:                  # slug = slugified --celltype arg from 07b
+#     <slug>:                  # slug = slugify(--celltype) from 07b
 #       <CellTypeName>:
 #         markers: [Gene1, Gene2, ...]   # mouse gene symbols (case-sensitive)
 #         refs: "Author Year; ..."       # literature source(s)
 #
-# Scoring: sc.tl.score_genes (mean log-normalized expression of marker set,
-# corrected for background). The cell type with the highest mean score per
-# subcluster wins. Add/remove genes freely — the script handles missing symbols
-# (warns, skips) so stale symbols are non-fatal. Aim for 5–15 specific markers
-# per type; very large lists dilute signal.
+# Scoring: sc.tl.score_genes on the LOGNORM layer; per integer subcluster the
+# highest mean score wins (07d merge_tracks). Missing symbols are warned+skipped
+# (non-fatal), so stale symbols don't crash — but a set needs >=2 present genes
+# to be scored at all. Aim for ~6-12 specific markers; huge lists dilute signal.
 #
-# All gene sets below are derived from peer-reviewed snRNA-seq or scRNA-seq
-# studies of mouse brain or placenta. Gene symbols verified against MGI
-# nomenclature as of 2024. Mark any symbol you're unsure about with
-# # UNVERIFIED so it can be confirmed before production.
+# SLUGS BELOW MATCH THE ACTUAL 07b RUNS (do not rename without re-running 07b):
+#   brain:    immune, opc_oligodendrocytes, astrocytes_ependymal
+#   placenta: dsc, endothelium, myeloid, nk
 #
+# Contamination_* labels: every 07b run isolates non-target cells into their own
+# subclusters (majority-vote spillover from Phase 7). These sets let 7d NAME those
+# clusters as Contamination_<type>; 8b/8c --subcluster then exclude any
+# subcluster_name starting with "Contamination" (and "unresolved"). The label sets
+# below were derived from the actual 07b marker review (2026-06).
+#
+# NOTE: Cx3cr1 is NOT in the 10x Flex Mouse Transcriptome v2 panel and has been
+# removed from microglia/macrophage sets (would silently drop). Symbols I'm not
+# fully sure of are flagged # UNVERIFIED.
 # ============================================================================
 
 
 subcluster_markers:
 
   # ==========================================================================
-  # BRAIN CELL TYPES
+  # BRAIN — immune  (07b: Immune)
+  #   states found: homeostatic microglia, Apoe+/PAM (P1), BAM, IFN microglia
+  #   contaminants: neuronal, cerebellar granule, oligodendrocyte, neuroblast
+  #   refs: Keren-Shaul 2017 Cell; Hammond 2019 Immunity; Li 2019 Science;
+  #         Mrdjen 2018 Immunity (BAM); Mathys 2019 Nature (IFN)
   # ==========================================================================
-
-  # --------------------------------------------------------------------------
-  # Microglia subtypes
-  # Key references:
-  #   Keren-Shaul 2017 Cell (DAM discovery, 5xFAD)
-  #   Deczkowska 2018 Cell (MgnD / stage-1 vs stage-2 DAM)
-  #   Bennett 2016 Nat Neurosci (homeostatic sensome)
-  #   Hammond 2019 Immunity (developmental microglia states)
-  #   Li 2019 Science (proliferating microglia, P1 brain)
-  # --------------------------------------------------------------------------
-  microglia:
+  immune:
 
     Homeostatic_Microglia:
-      markers:
-        - P2ry12      # canonical homeostatic purinergic receptor
-        - P2ry13      # co-expressed with P2ry12 in homeostatic state
-        - Tmem119     # highly specific homeostatic marker
-        - Cx3cr1      # fractalkine receptor, surveillance microglia
-        - Hexb        # lysosomal enzyme, homeostatic
-        - Tgfbr1      # TGF-β signalling, homeostatic maintenance
-        - Csf1r       # CSF1R (M-CSFR), pan-microglia but high in homeostatic
-        - Siglech     # sialic acid receptor, homeostatic microglia
-        - Gpr34       # orphan GPCR, highly enriched in homeostatic
-        - Sall1       # TF required to maintain homeostatic identity
-      refs: "Keren-Shaul 2017 Cell; Bennett 2016 Nat Neurosci; Deczkowska 2018 Cell"
+      # only genes that genuinely DROP in activation (so activated substates don't
+      # all score homeostatic). Dropped Hexb/Csf1r/Cst3/P2ry13-stay-high.
+      markers: [P2ry12, Tmem119, Siglech, Selplg, Gpr34, Sall1]
+      refs: "Bennett 2016 Nat Neurosci; Keren-Shaul 2017 Cell"
 
-    DAM:
-      # Disease/stress-associated microglia — stage 2 (TREM2-dependent)
-      markers:
-        - Trem2       # canonical DAM activator / AD risk gene
-        - Apoe        # lipid metabolism, upregulated in DAM
-        - Lpl         # lipoprotein lipase, lipid clearance
-        - Cst7        # cystatin F, lysosomal
-        - Tyrobp      # TREM2 adaptor (DAP12), stage-1 and -2 DAM
-        - Axl         # efferocytosis receptor
-        - Cd9         # tetraspanin, DAM-enriched
-        - Gpnmb       # phagocytic / tissue remodelling
-        - Spp1        # osteopontin, inflammatory activation
-        - Itgax       # CD11c integrin, activated microglia
-      refs: "Keren-Shaul 2017 Cell; Deczkowska 2018 Cell"
+    PAM_ATM_Microglia:
+      # Proliferative-region-/axon-tract-associated microglia (developmental, P1).
+      # Tight set matching cluster-1 top markers — absent canonical-DAM genes
+      # (Spp1/Igf1/Fabp5/Cd9) removed so they don't dilute the score_genes mean.
+      markers: [Apoe, Ctsb, Ctsd, Abca1, Anxa3, Grn, Cd63, Lpl, Gpnmb]
+      refs: "Hammond 2019 Immunity; Li 2019 Science (PAM/ATM)"
 
-    DAM_stage1:
-      # Stage-1 / intermediate DAM (TREM2-independent)
-      markers:
-        - Tyrobp      # elevated before full DAM activation
-        - Apoe        # early upregulation
-        - B2m         # MHC-I component, early activation
-        - Fth1        # iron storage, oxidative stress response
-        - Lyz2        # lysozyme, innate immunity
-        - Ctsd        # cathepsin D, lysosomal
-        - Ctsb        # cathepsin B, lysosomal
-      refs: "Keren-Shaul 2017 Cell (stage-1 intermediate cluster)"
+    BAM:
+      # Border-associated / perivascular macrophages (non-microglial CNS myeloid)
+      markers: [Mrc1, Pf4, F13a1, Ms4a7, Dab2, Lyve1, Cbr2, Stab1]
+      refs: "Mrdjen 2018 Immunity; Van Hove 2019 Nat Neurosci"
 
-    Proliferating_Microglia:
-      # Mainly at P1 / early postnatal; transient developmental state
-      markers:
-        - Mki67       # proliferation marker
-        - Top2a       # DNA topoisomerase, S/G2/M
-        - Pcna        # DNA replication
-        - Ccnd1       # cyclin D1, G1/S
-        - Mcm2        # MCM helicase, S-phase
-      refs: "Hammond 2019 Immunity; Li 2019 Science"
-
-    Inflammatory_Microglia:
-      # Pro-inflammatory / IFN-responsive state
-      markers:
-        - Ifit1       # IFN-stimulated gene
-        - Ifit3       # IFN-stimulated gene
-        - Isg15       # ubiquitin-like ISG
-        - Stat1       # IFN signalling TF
-        - Il1b        # IL-1β, classic neuroinflammatory cytokine
-        - Ccl4        # chemokine, inflammatory recruitment
-        - Tnf         # TNF-α, acute inflammatory
+    IFN_Microglia:
+      # Interferon-responsive microglia. Trimmed to genes actually in cluster 3;
+      # removed Ifit1/Ifit3/Isg15/Rsad2/Usp18 (absent → diluted the score).
+      markers: [Irf7, Bst2, Xaf1, Parp14, Slfn8, Rnf213, Lgals3bp]
       refs: "Mathys 2019 Nature; Sala Frigerio 2019 Cell Stem Cell"
 
-  # --------------------------------------------------------------------------
-  # Oligodendrocyte lineage subtypes
-  # Key references:
-  #   Marques 2016 Science (mouse OL lineage scRNA-seq, 12 populations)
-  #   Zeisel 2018 Cell (juvenile and adult CNS atlas)
-  #   Falcão 2018 Nat Neurosci (inflammatory OL states)
-  #   Trevino 2021 Cell (developing cortex, P1-relevant)
-  # --------------------------------------------------------------------------
-  oligodendrocyte_lineage:
+    Proliferating_Microglia:
+      markers: [Mki67, Top2a, Pcna, Mcm2, Cenpu]   # Cenpu = ex-Mlf1ip
+      refs: "Hammond 2019 Immunity; Li 2019 Science"
+
+    Contamination_Neuronal:
+      markers: [Snap25, Rbfox3, Meg3, Syt1, Gria2, Grin2b, Snhg11, Ptprn2]
+      refs: "contaminant — pan-neuronal"
+
+    Contamination_Cb_Granule:
+      markers: [Gabra6, Cbln3, Cbln1, Grm4, Fat2]
+      refs: "contaminant — cerebellar granule"
+
+    Contamination_Oligo:
+      markers: [Plp1, Mbp, Mog, Mag, Cldn11]
+      refs: "contaminant — oligodendrocyte"
+
+    Contamination_Neuroblast:
+      markers: [Dcx, Igfbpl1, Tubb2b, Cd24a, Sox11]
+      refs: "contaminant — neuroblast/immature neuron"
+
+  # ==========================================================================
+  # BRAIN — opc_oligodendrocytes  (07b: OPC/Oligodendrocytes)
+  #   lineage found: OPC, cycling OPC, COP, NFOL, MFOL, MOL
+  #   contaminant: cerebellar granule
+  #   refs: Marques 2016 Science; Zeisel 2018 Cell
+  # ==========================================================================
+  opc_oligodendrocytes:
 
     OPC:
-      # Oligodendrocyte precursor cells — proliferating progenitor pool
-      markers:
-        - Pdgfra      # PDGF receptor-α, canonical OPC marker
-        - Cspg4       # NG2 proteoglycan, OPC surface marker
-        - Olig2       # pan-oligolineage TF, highest in OPC
-        - Sox10       # pan-oligolineage TF
-        - Ascl1       # proneural TF, active OPC state
-        - Neu4        # sialyltransferase, OPC-enriched
-        - Lhfpl3      # OPC-specific, Marques 2016
+      markers: [Pdgfra, Cspg4, Olig2, Sox10, Lhfpl3, Ptprz1, Tnr, Cspg5, Matn4]
       refs: "Marques 2016 Science; Zeisel 2018 Cell"
+
+    Cycling_OPC:
+      markers: [Mki67, Top2a, Pcna, Msi2, Pdgfra]
+      refs: "Marques 2016 Science (cycling OPC); Hammond 2019"
 
     COP:
-      # Committed oligodendrocyte precursors — differentiating, post-mitotic
-      markers:
-        - Gpr17       # GPCR, COP-specific; repressed in mature OL
-        - Bmp4        # BMP pathway, COP stage
-        - Enpp6       # lysophospholipase, COP marker
-        - Itpr2       # IP3 receptor, marks early differentiating OL
-        - Nkx2-2      # TF, commitment to OL fate
-      refs: "Marques 2016 Science; Zeisel 2018 Cell"
+      # Committed OL precursor — Gpr17 peak, post-mitotic
+      markers: [Gpr17, Bmp4, Enpp6, Nkx2-2, Itpr2, Bcas1]
+      refs: "Marques 2016 Science"
 
     NFOL:
-      # Newly formed oligodendrocytes
-      markers:
-        - Frmd4a      # FERM domain, NFOL marker
-        - Tmem2       # transmembrane protein, NFOL-enriched
-        - Ctps        # CTP synthase, metabolic, myelination onset
-        - Cd82        # tetraspanin, early myelin
-        - Tcf7l2      # WNT TF, transiently expressed
+      # Newly-formed OL — differentiating
+      markers: [Bcas1, Fyn, Tcf7l2, Frmd4a, Enpp6, Cd82, Sirt2]
       refs: "Marques 2016 Science"
 
     MFOL:
-      # Myelin-forming oligodendrocytes — active myelination
-      markers:
-        - Ctps        # CTP synthase (also NFOL but peaks at MFOL)
-        - Plp1        # proteolipid protein, major myelin component
-        - Mbp         # myelin basic protein, hallmark myelination
-        - Mal         # myelin-associated lipid
-        - Cnp         # 2',3'-cyclic nucleotide phosphodiesterase
-      refs: "Marques 2016 Science; Nave 2014 Ann Rev Neurosci"
+      # Myelin-forming OL — active myelination
+      markers: [Mobp, Mbp, Plp1, Mal, Cnp, Tspan2]
+      refs: "Marques 2016 Science; Nave 2014 Annu Rev Neurosci"
 
     MOL:
-      # Mature oligodendrocytes — maintenance myelination
-      markers:
-        - Mbp         # myelin basic protein (highest in MOL)
-        - Plp1        # proteolipid protein
-        - Mog         # myelin oligodendrocyte glycoprotein
-        - Mag         # myelin-associated glycoprotein
-        - Klk6        # kallikrein 6, MOL2-enriched (Marques 2016)
-        - Hopx        # homeodomain TF, MOL2
-        - Ptgds       # prostaglandin D2 synthase, MOL5/6
-        - Anxa5       # annexin A5, MOL2
-      refs: "Marques 2016 Science (MOL1-6 substates)"
+      # Mature OL — maintenance
+      markers: [Mog, Mag, Klk6, Ptgds, Apod, Aplp1, Cldn11, Anxa5]
+      refs: "Marques 2016 Science (MOL1-6)"
 
-  # --------------------------------------------------------------------------
-  # Astrocyte subtypes
-  # Key references:
-  #   Zeisel 2018 Cell
-  #   Bayraktar 2020 Nat Neurosci (grey vs white matter astrocytes)
-  #   Zamanian 2012 J Neurosci (A1/A2 reactive astrocytes)
-  #   Liddelow 2017 Nature (A1 neurotoxic reactive)
-  # --------------------------------------------------------------------------
-  astrocytes:
+    Contamination_Cb_Granule:
+      markers: [Gabra6, Cbln3, Cbln1, Grm4, Fat2]
+      refs: "contaminant — cerebellar granule"
+
+  # ==========================================================================
+  # BRAIN — astrocytes_ependymal  (07b: Astrocytes/Ependymal, res 0.3)
+  #   states found: mature/protoplasmic astro, immature/gliogenic astro,
+  #     radial glia, ependymal (3 clusters), choroid plexus
+  #   contaminants: cerebellar granule, neuroblast
+  #   refs: Zeisel 2018 Cell; Bayraktar 2020 Nat Neurosci; Liddelow 2017 Nature;
+  #         Lein 2007 / Allen (ependymal, choroid)
+  # ==========================================================================
+  astrocytes_ependymal:
 
     Protoplasmic_Astrocyte:
-      # Grey matter astrocytes — synaptic support, ion buffering
-      markers:
-        - Aqp4        # water channel, astrocyte endfeet
-        - Gfap        # intermediate filament (enriched in reactive, low in protoplasmic)
-        - Aldh1l1     # pan-astrocyte metabolic marker
-        - Slc1a2      # GLT1 glutamate transporter
-        - Slc1a3      # GLAST glutamate transporter
-        - Sox9        # astrocyte TF
-        - Gjb6        # connexin 30, gap junctions
-        - Fgfr3       # FGF receptor, grey matter astrocytes
+      # Grey-matter mature astrocyte
+      markers: [Aqp4, Slc1a2, Slc1a3, Gpr37l1, Gjb6, Sox9, Fgfr3, Ntsr2, Sparcl1, Atp1a2]
       refs: "Zeisel 2018 Cell; Bayraktar 2020 Nat Neurosci"
 
     Fibrous_Astrocyte:
-      # White matter astrocytes
-      markers:
-        - Gfap        # high in fibrous/white matter astrocytes
-        - S100b       # S100 calcium binding, white matter enriched
-        - Kcnj10      # Kir4.1 potassium channel
-        - Id3         # inhibitor of differentiation, fibrous
-      refs: "Bayraktar 2020 Nat Neurosci; Zeisel 2018 Cell"
+      # White-matter astrocyte
+      markers: [Gfap, S100b, Kcnj10, Id3, Aqp4]
+      refs: "Bayraktar 2020 Nat Neurosci"
+
+    Immature_Astrocyte:
+      # Developmental / gliogenic astrocyte (P1)
+      markers: [Slco1c1, Foxg1, Sfrp1, Zbtb20, Lifr, Phyhipl, Cdh2]
+      refs: "Zeisel 2018 Cell; Di Bella 2021 Nature"
+
+    Radial_Glia:
+      # Progenitor state (P1 only)
+      markers: [Fabp7, Tnc, Ncan, Bcan, Vim, Nes, Hes1, Hes5, Pax6, Sox2]
+      refs: "Di Bella 2021 Nature"
+
+    Ependymal:
+      # Multiciliated ependyma
+      markers: [Foxj1, Cfap54, Cfap44, Cfap65, Cfap69, Ccdc39, Daw1, Ttll3, Pifo, Hydin, Tmem212]
+      refs: "Shah 2018 Neuron; Zeisel 2018 Cell"
+      # Pifo/Tmem212/Daw1/Ttll3/Hydin: motile-cilia genes # UNVERIFIED exact MGI for a couple
+
+    Choroid_Plexus:
+      markers: [Ttr, Folr1, Otx2, Kcnj13, Clic6, Aqp1, Prlr]   # Ttr/Folr1 canonical CP
+      refs: "Lun 2015 Nat Rev Neurosci; Dani 2021 Cell"
 
     Reactive_A1:
-      # Neurotoxic reactive astrocytes (A1/C3+ type)
-      markers:
-        - C3          # complement component, A1-specific
-        - Lcn2        # lipocalin-2, pan-reactive but A1 enriched
-        - Steap4      # metalloreductase, A1
-        - H2-T23      # MHC-I, neuroinflammatory # UNVERIFIED — check exact MGI symbol
-        - Serping1    # C1-inhibitor, A1
+      markers: [C3, Lcn2, Steap4, Serping1, Gbp2]   # H2-T23 dropped (UNVERIFIED symbol)
       refs: "Liddelow 2017 Nature; Zamanian 2012 J Neurosci"
 
     Reactive_A2:
-      # Neuroprotective reactive astrocytes
-      markers:
-        - Emp1        # epithelial membrane protein 1, A2-enriched
-        - Tgm1        # transglutaminase 1, A2
-        - Ptx3        # pentraxin 3, A2
-        - S100a10     # S100A10, A2-enriched
-        - Cd109       # GPI-anchored glycoprotein, A2
-      refs: "Zamanian 2012 J Neurosci; Liddelow 2017 Nature"
+      markers: [Emp1, Tgm1, Ptx3, S100a10, Cd109]
+      refs: "Zamanian 2012 J Neurosci"
 
-    Radial_Glia:
-      # Only expected at P1 (progenitor state; gives rise to neurons + glia)
-      markers:
-        - Nes          # nestin, progenitor intermediate filament
-        - Vim          # vimentin, radial glia
-        - Pax6         # TF, cortical progenitors
-        - Sox2         # pluripotency TF, neural progenitors
-        - Eomes        # TBR2, intermediate progenitors
-        - Hes1         # Notch target, RG maintenance
-        - Fabp7        # BLBP, radial glia-specific
-      refs: "Di Bella 2021 Nature (P1 developing cortex)"
+    Contamination_Cb_Granule:
+      markers: [Gabra6, Cbln1, Cbln3, Grm4, Fat2]
+      refs: "contaminant — cerebellar granule"
 
-  # --------------------------------------------------------------------------
-  # Excitatory neuron subtypes (brain)
-  # Key references:
-  #   Tasic 2018 Nature (adult mouse cortex atlas)
-  #   Yao 2023 Nature (Allen Brain Cell Atlas)
-  #   Di Bella 2021 Nature (P1 developing cortex)
-  # --------------------------------------------------------------------------
-  excitatory_neurons:
-
-    L2_3_IT:
-      # Layer 2/3 intratelencephalic (cortico-cortical)
-      markers:
-        - Cux1        # upper-layer cortical TF
-        - Cux2        # upper-layer cortical TF
-        - Rasgrf2     # RAS GEF, L2/3-specific
-        - Pou3f2      # BRN2, upper layer TF
-      refs: "Tasic 2018 Nature; Yao 2023 Nature"
-
-    L4_IT:
-      markers:
-        - Rorb        # nuclear receptor, L4-enriched
-        - Rspo1       # R-spondin, L4
-        - Thsd7a      # thrombospondin domain, L4 # UNVERIFIED
-      refs: "Tasic 2018 Nature; Yao 2023 Nature"
-
-    L5_IT:
-      markers:
-        - Fezf2       # TF, L5/6 corticofugal neurons
-        - Bcl11b      # CTIP2, L5/6 deep layer
-        - Pcp4        # purkinje cell protein 4, L5
-        - Npr3        # natriuretic peptide receptor, L5 IT # UNVERIFIED
-      refs: "Tasic 2018 Nature; Yao 2023 Nature"
-
-    L5_ET:
-      # Layer 5 extratelencephalic (corticospinal, corticobulbar)
-      markers:
-        - Fezf2       # required for ET fate
-        - Bcl11b      # CTIP2, deep layer
-        - Crym        # crystallin mu, corticospinal neurons
-        - Slc17a8     # VGLUT3, subpopulation
-      refs: "Tasic 2018 Nature; Yao 2023 Nature"
-
-    L6_CT:
-      # Layer 6 corticothalamic
-      markers:
-        - Foxp2       # TF, L6 corticothalamic
-        - Tle4        # TLE4, L6-enriched
-        - Syt6        # synaptotagmin 6, L6 CT # UNVERIFIED
-      refs: "Tasic 2018 Nature; Yao 2023 Nature"
-
-    Developing_Excitatory:
-      # Immature excitatory neurons (expected at P1)
-      markers:
-        - Neurod2     # neuronal differentiation TF
-        - Neurod6     # neuronal differentiation TF
-        - Tbr1        # TBR1, postmitotic excitatory neurons
-        - Satb2       # upper-layer identity TF
-        - Map2        # microtubule, dendritic marker
-      refs: "Di Bella 2021 Nature; Telley 2019 Science"
-
-  # --------------------------------------------------------------------------
-  # Inhibitory neuron subtypes (brain)
-  # Key references:
-  #   Tasic 2018 Nature; Yao 2023 Nature; Mi 2018 Science
-  # --------------------------------------------------------------------------
-  inhibitory_neurons:
-
-    PV_Interneuron:
-      markers:
-        - Pvalb       # parvalbumin, fast-spiking basket/chandelier cells
-        - Kcnc1       # Kv3.1, fast-spiking
-        - Tac1        # substance P, PV subpopulation
-      refs: "Tasic 2018 Nature; Mi 2018 Science"
-
-    SST_Interneuron:
-      markers:
-        - Sst         # somatostatin, Martinotti cells
-        - Npy         # neuropeptide Y, co-expressed with SST
-        - Mafb        # TF, SST interneurons
-      refs: "Tasic 2018 Nature"
-
-    VIP_Interneuron:
-      markers:
-        - Vip         # vasoactive intestinal peptide
-        - Cck         # cholecystokinin, VIP co-expression
-        - Calb2       # calbindin 2 (calretinin)
-      refs: "Tasic 2018 Nature; Yao 2023 Nature"
-
-    LAMP5_Interneuron:
-      markers:
-        - Lamp5       # lysosomal membrane protein 5
-        - Nos1        # neuronal nitric oxide synthase
-        - Id2         # inhibitor of differentiation 2
-      refs: "Tasic 2018 Nature; Yao 2023 Nature"
-
-    Developing_Inhibitory:
-      # Immature interneurons — tangentially migrating at P1
-      markers:
-        - Lhx6        # LIM homeobox TF, MGE-derived interneurons
-        - Nkx2-1      # TF, MGE progenitor identity
-        - Dlx1        # DLX homeobox TF, interneuron progenitors
-        - Dlx2        # DLX homeobox TF, interneuron progenitors
-        - Gad1        # GAD67, GABA synthesis
-        - Gad2        # GAD65, GABA synthesis
-      refs: "Di Bella 2021 Nature; Mayer 2018 Nature"
+    Contamination_Neuroblast:
+      markers: [Dcx, Igfbpl1, Tfap2a, Rbfox2, Sox11, Unc5c]
+      refs: "contaminant — neuroblast/immature neuron"
 
   # ==========================================================================
-  # PLACENTA CELL TYPES
-  # Key references for all placenta sections:
-  #   Marsh & Blelloch 2020 eLife (snRNA-seq, E9.5-E14.5, labyrinth focus)
-  #   Zhou 2021 Dev Cell (scRNA-seq, E10.5 mouse placenta, 16 clusters)
-  #   Han 2018 Cell (mouse gastrulation / early placentation)
-  #   Liang 2022 Dev Cell / Chen 2022 Dev Cell (Hofbauer cell origin)
-  #   Freyer 2022 Development (Hofbauer EMP origin, scRNA-seq)
-  #   Liu 2023 Nat Commun (arsenic-exposed placenta scRNA-seq)
-  #   Pijuan-Sala 2023 Nat Ecol Evol (comparative placenta atlas)
+  # PLACENTA — dsc  (07b: DSC)
+  #   states found: decidual stroma, stromal fibroblast, smooth muscle
+  #   contaminant: spongiotrophoblast (LARGE, E18.5-specific — cluster 4)
+  #   refs: Liu 2023 Nat Commun; Pijuan-Sala 2023 Nat Ecol Evol; Marsh 2020 eLife
   # ==========================================================================
-
-  # --------------------------------------------------------------------------
-  # Labyrinth trophoblast subtypes
-  # --------------------------------------------------------------------------
-  trophoblast:
-
-    LaTP:
-      # Labyrinth trophoblast progenitors — MET+ EPCAM+ progenitor pool
-      markers:
-        - Met         # hepatocyte growth factor receptor, canonical LaTP
-        - Epcam       # epithelial cell adhesion molecule, LaTP
-        - Pvt1        # Myc enhancer RNA, proliferative progenitors
-        - Ly6a        # Sca-1, progenitor surface marker
-        - Egfr        # EGF receptor (LaTP2 sub-population)
-      refs: "Marsh & Blelloch 2020 eLife (Fig 2)"
-
-    SynT_I:
-      # Syncytiotrophoblast layer I — fetal-blood facing, barrier function
-      markers:
-        - Syna        # syncytin A, cell-fusion gene, SynT-I specific
-        - Mct1        # monocarboxylate transporter (Slc16a1), SynT-I
-        - Prkce       # protein kinase C epsilon, mature SynT-I
-        - Snap91      # clathrin assembly, mature SynT-I
-        - Tfrc        # transferrin receptor, SynT-I (iron transport)
-        - Epha4       # ephrin receptor (SynT-I precursor)
-      refs: "Marsh & Blelloch 2020 eLife; Simmons 2008 Dev Biol; Liu 2026 Biol Reprod"
-
-    SynT_II:
-      # Syncytiotrophoblast layer II — maternal-blood facing, gas exchange
-      markers:
-        - Gcm1        # GCM1 TF, canonical SynT-II / syncytialization master regulator
-        - Synb        # syncytin B, cell-fusion gene, SynT-II specific
-        - Gcgr        # glucagon receptor, novel SynT-II marker (Marsh 2020)
-        - Vegfa       # VEGF-A, angiogenic signal from SynT-II
-        - Cebpa       # C/EBPα TF, SynT-II
-        - Igf1r       # IGF1 receptor, SynT-II precursor → mature
-        - Ror2        # WNT receptor, SynT-II precursor
-      refs: "Marsh & Blelloch 2020 eLife; Simmons 2008; Liu 2026 Biol Reprod"
-
-    S_TGC:
-      # Sinusoidal trophoblast giant cells — maternal blood space, exocrine
-      markers:
-        - Ctsq        # cathepsin Q, canonical S-TGC marker
-        - Lepr        # leptin receptor, S-TGC specific
-        - Nos1ap      # nNOS adaptor, S-TGC (Marsh 2020)
-        - Tsc22d3     # glucocorticoid signalling effector, S-TGC
-        - Pparg       # PPAR-γ, S-TGC precursor commitment
-        - Lifr        # LIF receptor, S-TGC precursor
-        - Epas1       # HIF-2α, hypoxia-induced TF, S-TGC precursor
-      refs: "Marsh & Blelloch 2020 eLife; Simmons 2007 Dev Biol"
-
-  # --------------------------------------------------------------------------
-  # Junctional zone trophoblast subtypes
-  # --------------------------------------------------------------------------
-  spongiotrophoblast:
-
-    SpT:
-      # Spongiotrophoblast — junctional zone, endocrine secretion
-      markers:
-        - Tpbpa       # trophoblast-specific protein alpha, canonical SpT / JZP
-        - Ascl2       # MASH2 TF, required for SpT identity
-        - Prl3b1      # placental lactogen II, SpT marker
-        - Prl7a2      # prolactin family, SpT / SpA-TGC
-        - Mitf        # TF, SpT lineage commitment (Marsh 2020)
-        - Flt1        # VEGF receptor 1, SpT
-        - Slco2a1     # prostaglandin transporter, SpT
-      refs: "Marsh & Blelloch 2020 eLife; Simmons 2008; Zhou 2021 Dev Cell"
-
-    Glycogen_Trophoblast:
-      # Glycogen cells (GlyT / GlyC) — energy storage, late gestation
-      markers:
-        - Pcdh12      # protocadherin 12, canonical GlyT marker
-        - Plac8       # placenta-specific 8, GlyT
-        - Pla2g4d     # phospholipase A2 (cluster 7 in Zhou 2021)
-        - Gcm1        # low-level, shared with SynT-II # UNVERIFIED in GlyT
-        - Prl8a9      # prolactin family, GlyC
-      refs: "Marsh & Blelloch 2020 eLife; Zhou 2021 Dev Cell; Simmons 2008"
-
-    P_TGC:
-      # Parietal trophoblast giant cells — invasive, at decidua boundary
-      markers:
-        - Prl3d1      # placental lactogen I, P-TGC and secondary TGC
-        - Prl2c2      # prolactin family, P-TGC (Liu 2026)
-        - Hand1       # TF, TGC fate determination
-        - Stra13      # bHLH TF, TGC
-      refs: "Simmons 2008 Dev Biol; Liu 2026 Biol Reprod"
-
-  # --------------------------------------------------------------------------
-  # Non-trophoblast placenta cell types
-  # --------------------------------------------------------------------------
-  decidua:
+  dsc:
 
     Decidual_Stroma:
-      # Decidualized endometrial stromal cells — maternal compartment
-      markers:
-        - Prl8a2      # canonical mouse decidualization marker (dPRL paralog)
-        - Pgr         # progesterone receptor, decidual identity
-        - Hand2       # TF, decidual stromal cells
-        - Hoxa11      # HOX TF, uterine stromal identity
-        - Esr1        # estrogen receptor α
-        - Wnt4        # WNT ligand, decidualization signal
-        - Bmp2        # BMP2, required for decidualization
-        - Col14a1     # collagen XIV, decidual stroma (Pijuan-Sala 2023)
-        - Dcn         # decorin, stromal ECM
-      refs: "Liu 2023 Nat Commun; Pijuan-Sala 2023 Nat Ecol Evol; Wang 2023 iScience"
+      markers: [Prl8a2, Pgr, Hand2, Hoxa11, Esr1, Wnt4, Bmp2, Dcn, Cxcl14]
+      refs: "Liu 2023 Nat Commun; Pijuan-Sala 2023 Nat Ecol Evol"
 
-    Decidual_NK_cell:
-      # Uterine natural killer cells — maternal immune surveillance
-      markers:
-        - Ncr1        # NKp46, NK cell receptor
-        - Klrb1c      # NKR-P1C (NK1.1)
-        - Prf1        # perforin, cytotoxic NK
-        - Eomes       # TF, tissue-resident NK
-        - Il15        # IL-15, NK survival factor
-      refs: "Vento-Tormo 2018 Nature; Gaynor 2020 J Immunol"
+    Stromal_Fibroblast:
+      markers: [Col1a1, Col3a1, Col14a1, Mmp14, Aebp1, Lum, Sfrp4]
+      refs: "Pijuan-Sala 2023 Nat Ecol Evol; Marsh 2020 eLife"
 
-    Macrophage_PAMM:
-      # Placenta-associated maternal macrophages (non-Hofbauer)
-      markers:
-        - Adgre1      # F4/80, pan-macrophage (mouse)
-        - Csf1r       # CSF1R, macrophage survival
-        - Cx3cr1      # fractalkine receptor, monocyte-derived
-        - S100a8      # calprotectin, monocyte/inflammatory Mφ
-        - S100a9      # calprotectin, monocyte/inflammatory Mφ
-        - Lyz2        # lysozyme, innate immunity
-        - Cd68        # pan-macrophage lysosomal marker
-      refs: "Freyer 2022 Development; Chen 2022 Dev Cell"
+    Smooth_Muscle:
+      # Uterine/perivascular SMC + myofibroblast
+      markers: [Myh11, Tagln, Acta2, Actg2, Mylk, Tpm2, Myl9]
+      refs: "Marsh 2020 eLife; Liu 2023 Nat Commun"
 
-  # --------------------------------------------------------------------------
-  # Hofbauer cells — fetal placental macrophages
-  # --------------------------------------------------------------------------
-  hofbauer:
+    Contamination_Trophoblast:
+      # Spongiotrophoblast / junctional-zone trophoblast bleeding into DSC label
+      markers: [Tpbpa, Tpbpb, Psg21, Ceacam11, Ceacam12, Prl8a6, Prl3b1, Ascl2]
+      refs: "contaminant — junctional-zone trophoblast"
 
-    Hofbauer_cell:
-      # Fetal tissue-resident macrophages in labyrinth stroma
-      # YS-EMP derived (Freyer 2022); express M2-like and tissue-repair markers
-      markers:
-        - Adgre1      # F4/80
-        - Csf1r       # CSF1R, Hofbauer dependency
-        - Spi1        # PU.1, required for HBC (Freyer 2022)
-        - Cx3cr1      # chemokine receptor (lower than PAMMs in HBC)
-        - Cd68        # lysosomal, pan-macrophage
-        - Folr2       # folate receptor 2, HBC-enriched (human; UNVERIFIED mouse)
-        - Mrc1        # CD206 mannose receptor, M2-like HBC
-        - Gpnmb       # phagocytic glycoprotein, HBC maturation
-        - Lpl         # lipoprotein lipase, lipid metabolism
-      refs: "Freyer 2022 Development; Chen 2022 Dev Cell; Hofbauer 2022 review"
-
-  # --------------------------------------------------------------------------
-  # Placenta endothelial and mesenchymal cell types
-  # --------------------------------------------------------------------------
-  endothelial:
+  # ==========================================================================
+  # PLACENTA — endothelium  (07b: Endothelium)
+  #   states found: fetal/maternal endothelium, lymphatic EC
+  #   contaminants: erythroid, immune/leukocyte
+  #   refs: Marsh 2020 eLife; Zhou 2021 Dev Cell
+  # ==========================================================================
+  endothelium:
 
     Fetal_Endothelium:
-      # Fetal blood vessel endothelium in labyrinth
-      markers:
-        - Pecam1      # CD31, pan-endothelial
-        - Cdh5        # VE-cadherin, endothelial adherens junction
-        - Kdr         # VEGFR2/Flk1, fetal endothelium
-        - Tek         # TIE2 receptor, vascular endothelium
-        - Efnb2       # ephrin-B2, arterial endothelium
-        - Aplnr       # apelin receptor, endothelial
-      refs: "Marsh & Blelloch 2020 eLife (cluster 3); Zhou 2021 Dev Cell"
+      # tightened to the strongest pan-endothelial genes so contaminant clusters
+      # (erythroid/leukocyte embedded in EC) don't get out-scored by a broad set.
+      markers: [Pecam1, Cdh5, Kdr, Egfl7, Plvap]
+      refs: "Marsh 2020 eLife; Zhou 2021 Dev Cell"
+
+    Proliferating_Endothelium:
+      # cycling EC (Mki67+) — separates the proliferating cluster from a possible
+      # erythroid call when Hb is only ambient.
+      markers: [Mki67, Top2a, Pecam1, Cdh5, Kdr]
+      refs: "proliferating endothelium"
 
     Lymphatic_Endothelium:
-      markers:
-        - Flt4        # VEGFR3, lymphatic endothelium
-        - Prox1       # PROX1 TF, lymphatic specification
-        - Lyve1       # HA receptor, lymphatic
-      refs: "Marsh & Blelloch 2020 eLife (cluster 26)"
+      markers: [Flt4, Prox1, Lyve1, Pdpn]
+      refs: "Marsh 2020 eLife"
 
-  # --------------------------------------------------------------------------
-  # Placental mesenchyme / stromal subtypes
-  # --------------------------------------------------------------------------
-  fetal_mesenchyme:
+    Contamination_Erythroid:
+      markers: [Hbb-y, Hba-x, Alas2]   # trimmed — Gypa/Klf1/Slc4a1/Ermap diluted
+      refs: "contaminant — erythroid"
 
-    Pericyte:
-      # Vascular pericytes / perivascular mesenchymal cells
-      markers:
-        - Acta2       # α-SMA, pericyte / smooth muscle
-        - Pdgfrb      # PDGFR-β, pericyte receptor
-        - Rgs5        # RGS5, pericyte-specific marker
-        - Actg2       # γ-actin, smooth muscle
-        - Myl9        # myosin light chain 9, contractile
-        - Mylk        # myosin light chain kinase
-        - Wnt5b       # WNT5B, pericyte niche maintenance (Marsh 2020)
-      refs: "Marsh & Blelloch 2020 eLife; Liu 2023 Nat Commun"
+    Contamination_Immune:
+      markers: [Ptprc, Ctss, Itgb2, Csf2ra, Cd52]
+      refs: "contaminant — leukocyte"
 
-    Interstitial_Mesenchyme:
-      # PDPN+ interstitial cells with long projections (Marsh 2020 Fig 1 supp)
-      markers:
-        - Gata4       # GATA4 TF, cardiac and mesenchymal
-        - Kit         # c-KIT, interstitial cells
-        - Pdpn        # podoplanin, PDPN+ interstitial subgroup (Marsh 2020)
-        - Vim         # vimentin, mesenchymal
-        - Col1a1      # collagen I, fibroblast/mesenchyme
-        - Col3a1      # collagen III, fibroblast/mesenchyme
-        - Dcn         # decorin, connective tissue proteoglycan
-      refs: "Marsh & Blelloch 2020 eLife; Liu 2023 Nat Commun"
+  # ==========================================================================
+  # PLACENTA — myeloid  (07b: Myeloid)
+  #   states found: Hofbauer, monocyte, macrophage, dendritic cell, proliferating
+  #   contaminants: erythroid, mesothelial (Wt1+), endothelial
+  #   refs: Freyer 2022 Development; Chen 2022 Dev Cell
+  # ==========================================================================
+  myeloid:
 
-  # --------------------------------------------------------------------------
-  # Erythroid / blood cells (contamination or yolk sac-derived in early placenta)
-  # --------------------------------------------------------------------------
-  blood_cells:
-
-    Erythroid:
-      markers:
-        - Hbb-y       # embryonic haemoglobin
-        - Hba-x       # embryonic haemoglobin
-        - Alas2       # δ-aminolevulinic acid synthase, erythroid
-        - Gypa        # glycophorin A, erythroid surface
-        - Klf1        # erythroid TF
-      refs: "Zhou 2021 Dev Cell; Han 2018 Cell"
+    Hofbauer_cell:
+      # Fetal tissue-resident macrophage (M2-like)
+      markers: [Mrc1, Stab1, Fcrls, Maf, Cd68, Csf1r, Apoe, Lyve1, Folr2]   # Folr2 # UNVERIFIED mouse
+      refs: "Freyer 2022 Development; Chen 2022 Dev Cell"
 
     Monocyte:
-      markers:
-        - S100a8      # calprotectin, monocyte/neutrophil
-        - S100a9
-        - Ly6c2       # Ly6C, classical monocyte
-        - Ccr2        # CCR2 receptor, monocyte recruitment
-        - Csf1r       # CSF1R
+      markers: [Ly6c2, Ccr2, Plac8, Itgal, Adgre4, Fgr, S100a8, S100a9]
       refs: "Freyer 2022 Development"
+
+    Macrophage:
+      markers: [Adgre1, Cd68, Lgals3, Lilrb4a, Cd84, Siglec1, Ms4a7, Csf1r]
+      refs: "Freyer 2022 Development; Chen 2022 Dev Cell"
+
+    Dendritic_Cell:
+      markers: [Cd74, H2-Ab1, H2-Aa, H2-Eb1, Ciita, Clec9a, Flt3, Xcr1]
+      refs: "Guilliams 2016 Immunity"
+
+    Proliferating_Myeloid:
+      markers: [Mki67, Top2a, Kif11, Cdca2, Neil3]
+      refs: "proliferating myeloid"
+
+    Contamination_Erythroid:
+      markers: [Hbb-y, Hba-x, Alas2, Ermap, Slc4a1, Kel]
+      refs: "contaminant — erythroid"
+
+    Contamination_Mesothelial:
+      markers: [Wt1, Cyp11a1, Upk3b, Krt19, Lrrn4]   # Lrrn4/Upk3b mesothelial # UNVERIFIED
+      refs: "contaminant — mesothelial/steroidogenic"
+
+    Contamination_Endothelial:
+      markers: [Egfl7, Pecam1, Cdh5, Adcy6, Npr1]
+      refs: "contaminant — endothelial"
+
+  # ==========================================================================
+  # PLACENTA — nk  (07b: NK)
+  #   states found: decidual NK (Spp1+/Fcrl6+), hypoxic NK
+  #   contaminants: trophoblast, endothelial, erythroid
+  #   refs: Vento-Tormo 2018 Nature; Gaynor 2020 J Immunol
+  # ==========================================================================
+  nk:
+
+    Decidual_NK:
+      markers: [Ncr1, Klrb1c, Klrd1, Nkg7, Gzmb, Prf1, Eomes, Spp1, Fcrl6]
+      refs: "Vento-Tormo 2018 Nature; Gaynor 2020 J Immunol"
+
+    Contamination_Trophoblast:
+      markers: [Tpbpa, Prl3b1, Psg21, Ceacam11, Prl8a6, Ceacam12]
+      refs: "contaminant — trophoblast"
+
+    Contamination_Endothelial:
+      markers: [Egfl7, Eng, Cdh5, Col4a1, Pecam1]
+      refs: "contaminant — endothelial"
+
+    Contamination_Erythroid:
+      markers: [Hbb-y, Hba-x, Ermap, Slc4a1, Alas2]
+      refs: "contaminant — erythroid"

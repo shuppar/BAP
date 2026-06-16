@@ -485,11 +485,6 @@ annotation:
     - Csf3r
     - Cebpe
     - Lyz2
-reference:
-  ref_h5ad: null
-  labels_key: cell_type
-  region_key: null
-  region_concentration_threshold: 0.8
 contrasts:
   early_vs_relaxed_E12.5:
     description: "E12.5 placenta Early vs Relaxed \u2014 primary (mostly Pool3; 2 Relaxed in Pool4)"

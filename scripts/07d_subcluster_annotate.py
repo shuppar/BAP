@@ -200,8 +200,10 @@ def run_marker_scoring(adata, marker_cfg: dict,
             continue
         # score_genes modifies adata.obs in place; use a key per name
         key = f"_mscore_{slugify(name)}"
+        # score on lognorm LAYER — adata.X is raw counts in 08c objects, and
+        # use_raw=False alone would score on raw (library-size-dominated, wrong).
         sc.tl.score_genes(adata, gene_list=present, score_name=key,
-                          use_raw=False)
+                          use_raw=False, layer="lognorm")
         scores[name] = adata.obs[key].values
         # Clean up obs
         del adata.obs[key]

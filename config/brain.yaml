@@ -352,7 +352,7 @@ random_seed: 42
 annotation:
   celltypist_models:
     P1:
-      class: Developing_Mouse_Brain.pkl
+      class: null
       subclass: null
       region: null
     4W:
@@ -365,11 +365,10 @@ annotation:
       region: refs/celltypist_brain_adult_region.pkl
   class_to_broad_csv: refs/abc_class_to_broad.csv
   subclass_to_region_csv: refs/abc_subclass_to_region.csv
-reference:
-  ref_h5ad: refs/abc_brain_ref.h5ad
-  labels_key: cell_type
-  region_key: region
-  region_concentration_threshold: 0.8
+  scanvi_p1:
+    ref_h5ad: refs/rosenberg_p2brain_reference.h5ad
+    labels_key: rosenberg_fine
+    config_dir: config
 contrasts:
   early_vs_relaxed_per_age:
     description: "Early Stress vs Relaxed, within each age \u2014 primary"

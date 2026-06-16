@@ -19,6 +19,8 @@ Get broad context from the snRNAseq_project_summary.md file.
 - **R is called as subprocess**, not via rpy2.
 - **Idempotent steps where reasonable**, but don't over-engineer.
 - **Raw counts in `.X`, lognorm computed on demand.** `04_integration_prep.py` computes the lognorm layer for Phase 5's pre-integration UMAP, then Phase 5 drops it before saving. Notebooks and downstream phases call `_utils.add_lognorm(adata)` after loading the integrated h5ad.
+- **Time estimate.** Always give time estimate based on machine (WS or Mac) config.
+- **Tmux command** should always be like this: tmux new -d -s soupx_placenta 'uv run python -u scripts/02_soupx.py --config config/placenta.yaml --n-jobs 6 2>&1 | tee logs/02_soupx_placenta_full.log' tail -f /home/poller/BAP-BrainPlacenta/logs/02_soupx_placenta_full.log
 
 ## Pipeline architecture decisions (don't re-litigate)
 - **Language:** Python primary (Scanpy/scvi-tools). R subprocess for scDblFinder, propeller, SoupX.
@@ -73,6 +75,8 @@ Several bugs came from writing external identifiers from memory and presenting t
   - `score_genes(use_raw=False)` — runs on raw `.X`, not lognorm; need `layer="lognorm"`.
   - `Mlf1ip`/`Fam64a`/`Hn1` — outdated MGI symbols (now `Cenpu`/`Pimreg`/`Jpt1`).
   - `multi_class='ovr'` — removed in sklearn 1.7; CellTypist still hardcodes it (patched via sed; see §"CellTypist sklearn-1.7 patch").
+  - `Cx3cr1` — NOT in the 10x Flex Mouse Transcriptome v2 panel; use P2ry12/Tmem119/Csf1r/Aif1 for microglia. (Also absent: Fam64a, Hmgb2, Hn1, Mlf1ip, Wdc.)
+  - `datasplitter_kwargs` — correct scvi-tools 1.4.3 kwarg for num_workers/pin_memory (NOT data_loader_kwargs/dataloader_kwargs).
 
 ## No silent failures
 Wrong-but-plausible output is worse than a crash, because it looks correct.
@@ -84,6 +88,7 @@ Wrong-but-plausible output is worse than a crash, because it looks correct.
   - Required covariate column missing → `sys.exit`.
   - Phase 7 brain: any cell with `celltypist_class_predicted == "unset"` → `sys.exit` (a tier silently failed).
   - Phase 7 brain: lognorm layer missing when `apply_brain_marker_gate` runs → `sys.exit`.
+  - Phase 7 brain: P1 scANVI result index ≠ P1 cells, or any P1 cell unlabeled → `sys.exit`.
 - **Warn-and-skip is only acceptable when skipping an OPTIONAL output** and the skip is announced. Examples: CellTypist not installed → skip reference track; no markers → skip dotplot; an age has no CellTypist model → those cells get sentinel labels (announced).
 - **Never leave NaN labels that surface as a "nan" category.** Fill with an explicit sentinel (`"no_subclass_model"`, `"no_region_model"`, `"unassigned_glia"`, etc.).
 - When in doubt: fail loud and early (Phase 0 gate philosophy), not deep into a multi-hour run.
@@ -105,16 +110,16 @@ When a tool drags an incompatible dependency stack, isolate it — don't pin the
 - **Hard timebox: ~4 hours of debug per tool.** Past that, find an alternative or skip.
 
 ## Phase 1 = SoupX (locked 2026-06-10)
-Ambient RNA correction is essential for this dataset — particularly for P1 brain, where lysed nucleated erythroblasts dump hemoglobin into the lysis buffer, contaminating every droplet and causing CellTypist's Di Bella model to mis-call ~81K (~45%) of P1 nuclei as "Blood: Erythrocyte" / "Blood: Erythroid progenitor". The `pct_hemo ≤ 5%` QC cap catches the worst but doesn't help when contamination is uniformly distributed at lower per-cell fractions.
+Ambient RNA correction is essential for this dataset — particularly for P1 brain, where lysed nucleated erythroblasts dump hemoglobin into the lysis buffer. (Note: the P1 erythrocyte-MISLABEL problem turned out to be a REFERENCE issue, not ambient — see Annotation conventions. SoupX correctly stripped Hb; the fix was switching P1 to the Rosenberg reference. SoupX is still essential for ambient cleanup generally.)
 
-- **Why erythrocytes can appear at all in snRNA-seq:** Mature mammalian RBCs are anucleate, BUT P1 mouse brain still contains nucleated erythroblasts (basophilic / polychromatic / orthochromatic stages) in residual vasculature. Di Bella 2021's "Blood: Erythrocyte" label covers this nucleated erythroid lineage. A small number of these calls at P1 is biologically real; the bulk inflation is ambient contamination.
+- **Why erythrocytes can appear at all in snRNA-seq:** Mature mammalian RBCs are anucleate, BUT P1 mouse brain still contains nucleated erythroblasts (basophilic / polychromatic / orthochromatic stages) in residual vasculature. A small number of real erythroid calls at P1 is biologically plausible.
 - **Tool:** SoupX (CRAN), R subprocess. Avoids CellBender's pickle bug entirely.
 - **Workflow:** cellranger filtered + raw counts → `SoupChannel` → `scran::quickCluster` → `setClusters` → `autoEstCont` (data-driven rho per cluster) → `adjustCounts` → corrected counts written as MTX + barcodes.tsv + features.tsv + soupx_summary.json. Python orchestrator assembles per-sample h5ad.
 - **Manual rho fallback** (`--rho 0.10`) if `scran` install fails — bypasses clustering, uses fixed contamination fraction. ~10% is reasonable for snRNA-seq brain.
 - **Scripts:** `scripts/run_soupx.R` (R worker) + `scripts/02_soupx.py` (Python orchestrator; parallel via `ProcessPoolExecutor`, default `--n-jobs 4`, RAM ~5-15 GB per concurrent sample).
 - **Output:** `results/{tissue}/h5ad/02_soupx_corrected/{sample_id}.h5ad` + `tables/02_soupx/02_soupx_summary.csv` (per-sample rho_mean, pct_removed, n_cells).
 - **Smoke test:** `--sample-ids E1 --n-jobs 1` on one sample before launching the full ~57-sample production run.
-- **Downstream wiring (TBD):** `02_qc.py` needs a prefer-soupx fallback — if `02_soupx_corrected/{id}.h5ad` exists, read that; else fall back to cellranger filtered h5. SoupX changes counts → invalidates Phase 2 onwards; full re-run from Phase 2 needed.
+- **Downstream wiring:** `02_qc.py` has a prefer-soupx fallback — if `02_soupx_corrected/{id}.h5ad` exists, read that; else fall back to cellranger filtered h5. SoupX changes counts → invalidates Phase 2 onwards; full re-run from Phase 2 needed.
 
 ## renv Suggests workaround (2026-06-10)
 renv installs `Suggests` dependencies by default — for SoupX this pulls Seurat → shiny → bslib → fs, and `fs` needs `libuv-dev` system library. Three layered fixes:
@@ -173,57 +178,62 @@ Cross-species RRHO2 validation runs as TWO arms reported separately, NOT pooled.
 - **Schirmer 2019 (PRJNA544731) DEFERRED.** Raw FASTQ only on SRA.
 - **Mouse anchors DEFERRED** (Marques 2016, Falcão 2018, Velmeshev 2023, Braun 2023).
 - **Subset RRHO is the paper-quality comparison.** Use `subset_labels` block in `config/cross_species_celltype_map.yaml` for headline figures.
+- **Cross-species region matching uses `celltypist_region`** (brain). P1 region is now populated (parsed from Rosenberg labels), so P1 can participate in region-matched comparisons — not just adults.
 - Loaders in `09_cross_species_validation.py` are STUBS — raise `NotImplementedError`. Smoke-test on Velmeshev first.
 
 ## Smoke-test policy
 For every phase that takes >10 min on workstation: build a 1-sample (or 1-pool, 1-cluster) subset, run, verify outputs in expected paths, THEN launch full thing in tmux.
 - Burned ~4 hours on CellBender's checkpoint bug at scale.
 - Burned 30 min on missing `brain.yaml` CellTypist mappings.
-- **Phases that NEED smoke tests:** 1 SoupX (NEW), 5 scVI, 7c scANVI, 8c with --tf, 9 cross-species.
-- **Phases too cheap to need smoke tests:** 0, 2, 3, 4, 6, 7 main, 7b, 7d, 8a, 8b, 8d, 8e (under ~30 min wall time per tissue).
+- **Phases that NEED smoke tests:** 1 SoupX, 5 scVI, 7 P1-scANVI (Rosenberg transfer), 8c with --tf, 9 cross-species.
+- **Phases too cheap to need smoke tests:** 0, 2, 3, 4, 6, 7 main (adult CellTypist), 7b, 7d, 8a, 8b, 8d, 8e (under ~30 min wall time per tissue).
 
 ## Dev workflow — split at h5 level, not at runtime
 - **dev_split_h5.py** runs ONCE before Phase 0 on dev. Reads the 3 dev h5 files, writes 9 split h5 files (random barcode partition) into `data/dev_split/`, and emits `config/dev_split.yaml`.
 - **No pipeline scripts are dev-aware.** All phase scripts run unchanged with `--config config/dev_split.yaml`.
 - Pseudo-donors are random cell partitions → numbers MEANINGLESS, smoke test of code paths only.
-- **Dev is 4W-only by design.** All 9 pseudo-donors are 4W M Pool1. 8g cannot be exercised meaningfully on dev (one age → every classification = `transient_4W` or `none`).
+- **Dev is 4W-only by design.** All 9 pseudo-donors are 4W M Pool1. 8g cannot be exercised meaningfully on dev (one age → every classification = `transient_4W` or `none`). Note: dev being 4W-only means the P1-scANVI branch is NOT exercised on dev — smoke-test it on real P1 data on the WS.
 
 ## Annotation conventions
 - **Phase 7 uses per-cluster majority voting** (CellTypist convention), not per-cell argmax. Cells in one Leiden cluster share a label; low-purity (<60% majority OR runner-up >25%) clusters announced for manual review.
 - **Phase 7d (subcluster naming) is already cluster-level** — scores aggregate per integer subcluster ID.
-- **Brain Phase 7 uses per-age CellTypist models** with **3-tier schema** (locked 2026-06-10):
-  - **class** (canonical, 8b/8c key off it): per-(Leiden cluster × age) MAJORITY vote of per-cell predictions. P1 → `Developing_Mouse_Brain.pkl` (Di Bella 2021, built-in). 4W/3mo → `refs/celltypist_brain_adult_class.pkl` (34 ABC labels, cuML-trained 2026-06-10).
-  - **subclass** (4W/3mo only, per-cell): `refs/celltypist_brain_adult_subclass.pkl` (334 ABC labels). P1 → sentinel `"no_subclass_model"`. Consumed at subcluster level by 7b/7d.
-  - **region** (4W/3mo only, per-cell): `refs/celltypist_brain_adult_region.pkl` (12 ABC anatomical_division_label categories). P1 → sentinel `"no_region_model"`. Consumed at Phase 9 for region-matched cross-species comparison.
-  - YAML schema: `annotation.celltypist_models.<age>.{class, subclass, region}` (nested per age).
-  - Rationale for per-age: P1 has cell types (radial glia, IPC, neuroblasts) absent from ABC's adult taxonomy; ABC's mature cortical-layer subtypes barely exist at P1. Unified model would dilute predictions on both ends.
-- **Placenta Phase 7 has no CellTypist model.** Uses curated literature markers + STAMP Spearman correlation against Liu 2024 reference (35 cell types covering E9.5-E18.5). Tier 1+2 label-collapse map (35 → ~21) + STRICT canonical-marker gates (Neutrophil / Lymphoid / Megakaryocyte) + Xist + Y-gene compartment scoring + EPC/TSC negative-control QC.
+- **Brain Phase 7 = 4-tier, P1 via scANVI (UPDATED 2026-06-12; supersedes the 3-tier/Di-Bella scheme):**
+  - **broad** (`celltypist_broad`, region-FREE, cross-age tier): derived from class per-age — ABC `class_to_broad_csv` for 4W/3mo, `config/rosenberg_class_to_broad.csv` for P1; trailing ` (region)` suffix stripped so all ages align. ~9 classes. Derived in Phase 7 by `derive_brain_broad`. THIS is the cross-age tier (8g persistence, 9 cross-species).
+  - **class** (`celltypist_class`, canonical 8b/8c key): per-(Leiden cluster × age) MAJORITY vote. Region-TAGGED. ABC 34-vocab for 4W/3mo; Rosenberg ~18-vocab (e.g. CTX Glut, CB GABA) for P1. Two vocabularies coexist by design (per-age native).
+  - **subclass** (`celltypist_subclass`, per-cell): ABC 334 for 4W/3mo; raw Rosenberg ~65 fine labels for P1.
+  - **region** (`celltypist_region`, per-cell): ABC 12 for 4W/3mo; parsed from Rosenberg label prefix for P1 (CTX/CB/TH/HPF/OLF/STR/MB/non-regional).
+  - **P1 = scANVI label transfer from Rosenberg 2018 P2-brain** (`run_scanvi_p1.py`, GPU subprocess called inside `07_annotation.py` for the P1 branch only — mirrors the R-subprocess pattern). Reference built by `prepare_rosenberg_reference.py` (→ `refs/rosenberg_p2brain_reference.h5ad` + 3 grouping CSVs in `config/`). Di Bella ABANDONED: cortex-only, mislabeled 42% of whole-brain P1 as erythrocyte (region-coverage failure, NOT ambient — SoupX had stripped Hb). 4W/3mo = CellTypist from ABC. `07c_label_transfer.py` DELETED.
+  - YAML: `annotation.scanvi_p1.{ref_h5ad, labels_key, config_dir}` for P1; `annotation.celltypist_models.<age>.{class,subclass,region}` for adults (P1 entry null).
+  - The gate/majority/audit path is SHARED across all ages — P1 differs only in where the per-cell label comes from (scANVI vs CellTypist); everything downstream is common code.
+- **Placenta Phase 7 has no CellTypist model.** Curated literature markers + STAMP Spearman correlation against Liu 2024 reference (35 cell types, E9.5-E18.5). Tier 1+2 label-collapse (35 → ~21) + STRICT canonical-marker gates (Neutrophil / Lymphoid / Megakaryocyte) + Xist + Y-gene compartment scoring + EPC/TSC negative-control QC. Canonical key `celltype_majority`. NO broad tier yet — add a compartment grouping (trophoblast/decidua/immune/vascular/erythroid) when Phase 8f cross-tissue needs it.
+- **⚠ Brain plot-vs-data provenance (2026-06-12):** Phase 7 brain ran ONCE; `celltypist_broad` was then patched region-free in place via `scripts/patch_broad_regionfree.py` (no Phase 7 re-run), and broad + per-age-class UMAPs replotted via `scripts/replot_brain_annotation.py`. The h5ad is authoritative; not every plot in `plots/07_annotation/` came from one clean run. A clean `07_annotation.py` re-run reconciles everything. The annotation/plotting SPLIT was discussed but DEFERRED (no time) — for now plots are still coupled to the annotation run.
 
-## Brain marker gate (added 2026-06-10)
-STRICT canonical-marker gates for borderline brain CellTypist calls. Mirrors placenta STAMP gates. CellTypist's calibrated conf says "how sure is the LogReg among trained classes" — it cannot independently verify the cell expresses the biology the label requires. Gate catches false-positive labels.
+## Brain marker gate (updated 2026-06-12)
+STRICT canonical-marker gates for borderline brain calls. Runs over ALL (cluster×age) rows identically (P1 included). CellTypist/scANVI conf says "how sure among trained classes" — can't verify the cell expresses the biology the label requires. Gate catches false positives.
 
-- **`BRAIN_GATE_CONFIG` in `scripts/07_annotation.py`** — four gated cell types:
-  - microglia: ≥2 of {Cx3cr1, P2ry12, Tmem119, Csf1r, Aif1} → else demote to `unassigned_immune`
-  - astrocyte: ≥2 of {Aqp4, Gja1, Slc1a3, Aldh1l1} → else `unassigned_glia`
-  - ol_lineage: ≥1 of {Mbp, Mog, Plp1, Mag} → else `unassigned_glia`
-  - endothelial: ≥2 of {Cldn5, Pecam1, Cdh5} → else `unassigned_vascular`
-- **`MARKER_PRESENCE_THRESHOLD = 0.20`** — a marker is "present" if ≥20% of cells in the (cluster, age) group have lognorm > 0 for that gene.
-- **Keyword matching is case-insensitive substring** on `winner_class` label (e.g. "microglia" matches both "30 Microglia NN" from ABC and "Microglia" from Di Bella).
-- **Audit CSV columns added:** `markers_checked`, `markers_present`, `gate_outcome` (`no_gate` | `passed` | `demoted`), `gate_label`.
-- **First production run (Phase 7 brain, 2026-06-10):** 4 demotions (496 cells total) for "30 Astro-Epen" clusters where only Aldh1l1 expressed; 11 gates passed (microglia / astrocyte / OL / endothelial). Sensible, biologically grounded behaviour.
-- **Erythrocyte gate NOT YET ADDED** — would require ≥3 of {Hbb-bs, Hbb-bt, Hba-a1, Hba-a2, Alas2} at ≥30% cells (stricter threshold because we know mature RBC nuclei are absent). Decision deferred to after SoupX run resolves underlying ambient contamination.
+- **`BRAIN_GATE_CONFIG` in `scripts/07_annotation.py`** — five gated types:
+  - microglia: ≥2 of {P2ry12, Tmem119, Csf1r, Aif1} → `unassigned_immune`. **Cx3cr1 REMOVED — absent from 10x Flex Mouse Transcriptome v2 panel.**
+  - astrocyte: ≥2 of {Aqp4, Gja1, Slc1a3, Aldh1l1} → `unassigned_glia`
+  - ol_lineage: ≥1 of {Mbp, Mog, Plp1, Mag, Pdgfra, Cspg4, Olig1, Olig2, Sox10} → `unassigned_glia`. **OPC markers ADDED — OPCs lack mature myelin genes, were wrongly demoted (P1 cluster 48, 11k cells).**
+  - endothelial: ≥2 of {Cldn5, Pecam1, Cdh5} → `unassigned_vascular`
+  - **erythroid (ADDED): ≥2 of {Hbb-bs, Hbb-bt, Hba-a1, Hba-a2, Alas2} → `unassigned_erythroid`.** Safety net, self-targeting: real placenta erythroid (Hb high, 91% express ≥2) pass; false brain calls (Hb=background) demote. With scANVI/Rosenberg, P1 has no erythroid labels → 0 demotions; gate is belt-and-suspenders.
+- **`MARKER_PRESENCE_THRESHOLD = 0.20`** — marker "present" if ≥20% of cells in (cluster, age) have lognorm > 0.
+- **Keyword matching is case-insensitive substring** on `winner_class`.
+- **Audit CSV columns:** `markers_checked`, `markers_present`, `gate_outcome` (`no_gate`|`passed`|`demoted`), `gate_label`.
+- **Production run 2026-06-12:** 4 demotions (Astro-Epen, weak astro markers), 0 erythroid demotions.
 
 ## Brain age-composition sanity (added 2026-06-10)
 Diagnostic CSV `tables/07_annotation/07_annotation_age_composition_sanity.csv` flags developmentally-implausible (cluster × age) rows. **Informational only — does not modify labels.**
 
 - `BRAIN_AGE_EXPECTATIONS` list in `scripts/07_annotation.py` — keyword + expected_ages + flag_name tuples.
 - Current rules: radial glia / intermediate progenitor / IPC / neuroblast / glioblast / erythrocyte / erythroid progenitor → expected only at P1.
-- First production run: 0 flags (good).
+- Production run 2026-06-12: 0 flags (good).
 
 ## Plot format strategy (locked 2026-06-05)
 - **Default: PNG @ 300 DPI** for all pipeline plots. Cell-level UMAPs with 600K dots aren't suitable for pure SVG.
 - **Paper figures only** (~5-10 plots): refactor to PNG + PDF hybrid via `_utils.savefig(fig, path, dpi=300)`.
 - Don't refactor all 13 plotting scripts. Targeted post-Phase 8 update only.
+- **on-data UMAP labels require categorical dtype** — cast the color column to `category` before `sc.pl.umap(..., legend_loc="on data")`, else scanpy silently draws nothing.
 
 ## UMAP determinism (locked 2026-06-05)
 - **Explicit `random_state`** in Phase 5 + Phase 6 (scanpy default has no seed).
@@ -242,9 +252,9 @@ Diagnostic CSV `tables/07_annotation/07_annotation_age_composition_sanity.csv` f
 - **Subcluster runs go to suffixed folders** (`plots/08e_communication_subcluster_excitatory_neurons/...`).
 
 ## Offline-audit CSVs (no workstation access post-run)
-- **02_soupx** (NEW) `02_soupx_summary.csv` — per-sample rho_mean, rho_min, rho_max, pct_removed, n_cells, n_clusters, elapsed_sec, mode (autoEst | manual). Lets you spot-check whether SoupX over-corrected any sample.
-- **07** (NEW) `07_annotation_class_per_cluster_age.csv` — augmented with `markers_checked`, `markers_present`, `gate_outcome`, `gate_label`. Reviewers can verify any gated label without re-running.
-- **07** (NEW) `07_annotation_age_composition_sanity.csv` — developmentally-implausible (cluster × age) rows.
+- **02_soupx** `02_soupx_summary.csv` — per-sample rho_mean, rho_min, rho_max, pct_removed, n_cells, n_clusters, elapsed_sec, mode (autoEst | manual). Lets you spot-check whether SoupX over-corrected any sample.
+- **07** `07_annotation_class_per_cluster_age.csv` — augmented with `markers_checked`, `markers_present`, `gate_outcome`, `gate_label`. Reviewers can verify any gated label without re-running.
+- **07** `07_annotation_age_composition_sanity.csv` — developmentally-implausible (cluster × age) rows.
 - **8b** `08b_de_gene_expression_per_sample.csv` — per-sample mean lognorm of DE genes, keyed celltype × gene × sample_id.
 - **8c** `08c_pathway_leading_edge.csv` — genes driving each significant pathway with log2FC + direction.
 - **8c** `08c_tf_activity.csv` — TF activity scores + FDR per contrast×celltype×TF.
@@ -280,4 +290,4 @@ When presenting files in a Claude response, ALWAYS say which directory each one 
   - Pool2: 16 brain (4W females + P1 Early/Relaxed)
   - Pool3: 2 brain P1 Late + 14 placenta E12.5 (incl. duplicate CES2.3 to drop)
   - Pool4: 10 placenta (2 E12.5 Relaxed + all E18.5)
-- **GPU operational hygiene:** pre-flight `nvidia-smi --query-gpu=memory.used` check before launching scVI; refuse if non-display VRAM > 2 GB. `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512` for long scVI runs. Explicit cleanup between GPU phases: `del model; torch.cuda.empty_cache(); gc.collect()`.
+- **GPU operational hygiene:** pre-flight `nvidia-smi --query-gpu=memory.used` check before launching scVI/scANVI; refuse if non-display VRAM > 2 GB. `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512` for long scVI runs. Explicit cleanup between GPU phases: `del model; torch.cuda.empty_cache(); gc.collect()`.
