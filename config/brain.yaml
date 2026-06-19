@@ -323,7 +323,13 @@ sex_markers:
   x_linked:
   - Xist
 composition:
-  min_donors: 3
+  min_donors: 2
+  reliable_donors: 3
+strata:
+  sex:
+  - combined
+  - M
+  - F
 pathways:
   geneset_tsv: refs/msigdb_mouse.tsv
   collections:
@@ -418,17 +424,6 @@ contrasts:
     - - P1
       - 3mo
     flag: confounded_with_pool
-  within_age_sex_stratified:
-    description: "Stress contrasts within each sex \xD7 age \u2014 exploratory (n=2)"
-    design: ~ pool + group
-    group_by:
-    - age
-    - sex
-    test: group
-    levels:
-    - Early_Stress
-    - Relaxed
-    flag: underpowered_exploratory
   group_x_age_interaction:
     description: Does the stress effect change with age?
     design: ~ sex + pool + group * age

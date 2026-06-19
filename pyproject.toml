@@ -107,6 +107,9 @@ dependencies = [
     "scipy>=1.12",
     "pandas>=2.2,<3.0",                     # pandas 3.0 will be breaking; pin for now
     "scikit-learn>=1.4",
+    "statsmodels>=0.14",                    # BH correction in 08b shuffle test;
+    # also a common transitive dep but pinned explicitly so the import path is
+    # guaranteed (08b_disruption_shuffle_test.py falls back to np.nan if missing).
     # --- Utilities ---
     "tqdm>=4.66",
     "rich>=13.7",                           # nicer logging + tracebacks

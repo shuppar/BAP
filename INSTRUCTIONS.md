@@ -11,16 +11,40 @@ Get broad context from the snRNAseq_project_summary.md file.
 - **Always give commands to run a specific script** (just mention where to run: Local Mac or remote WS), or rsync a specific file or folder.
 
 ## Code style
-- **Parallel compute** wherever we can (training models, per-sample SoupX, etc.) — use multiprocessing or GPUs.
+- **Parallel compute** wherever we can (training models, per-sample SoupX, per-slice propeller, etc.) — use multiprocessing or GPUs. See the "Parallelism is mandatory" section below — the standard is `_utils.parallel_map`.
 - **Simple > clever.** Plain Python scripts in `scripts/`, not a Python package. No Pydantic schemas, no abstract base classes, no dependency injection. Just functions and main().
 - **One file per phase** (e.g. `01_validate.py`, `02_qc.py`). Each is runnable standalone.
-- **Shared helpers in `scripts/_utils.py`** (leading underscore = not a phase entry point). Currently provides `load_config`, `add_lognorm`, `phase_paths`, `select_accelerator`. Add to it when something gets duplicated 2+ times.
+- **Shared helpers in `scripts/_utils.py`** (leading underscore = not a phase entry point). Currently provides `load_config`, `load_contrasts`, `phase_paths`, `phase_table_dir`, `add_lognorm`, `select_accelerator`, `iter_strata`, `parallel_map`, `unassigned_mask`. Add to it when something gets duplicated 2+ times.
 - **Configs are plain YAML dicts.** No inheritance trees, no schema validation.
 - **R is called as subprocess**, not via rpy2.
 - **Idempotent steps where reasonable**, but don't over-engineer.
 - **Raw counts in `.X`, lognorm computed on demand.** `04_integration_prep.py` computes the lognorm layer for Phase 5's pre-integration UMAP, then Phase 5 drops it before saving. Notebooks and downstream phases call `_utils.add_lognorm(adata)` after loading the integrated h5ad.
 - **Time estimate.** Always give time estimate based on machine (WS or Mac) config.
 - **Tmux command** should always be like this: tmux new -d -s soupx_placenta 'uv run python -u scripts/02_soupx.py --config config/placenta.yaml --n-jobs 6 2>&1 | tee logs/02_soupx_placenta_full.log' tail -f /home/poller/BAP-BrainPlacenta/logs/02_soupx_placenta_full.log
+- **rsync command format**: Example -- rsync -av --chmod=Fu+x \
+  /Users/shuppar/Downloads/BAP_data_1/Analysis/scripts/replot_brain_annotation.py \
+  poller@172.17.213.147:/home/poller/BAP-BrainPlacenta/scripts/ (note: we are saving the WS results on MAC in appropriate subfolders in /home/poller/BAP-BrainPlacenta/results_WS (and not results)).
+
+## Parallelism is mandatory for repeated work (not optional)
+Any phase script that loops over samples / jobs / contrasts / cell-types and, per item,
+launches a subprocess (R worker) or calls a heavy function MUST parallelize via
+`_utils.parallel_map` and expose a `--n-jobs` CLI flag. A bare for-loop that starts one
+subprocess per item is a performance bug — treat it like any other bug.
+
+- `for item, result, err in parallel_map(fn, items, n_jobs=args.n_jobs, desc="..."):`
+  yields (item, result, error); `err` is a string on failure (captured, not raised), so
+  one bad item never aborts the batch — the caller decides what to do with it.
+- Default `use_threads=True` (subprocess / I/O-bound, e.g. R workers). Use
+  `use_threads=False` (processes) only for CPU-bound pure-Python work, and then `fn` and
+  items must be picklable (top-level fn, no closures/lambdas).
+- Default `--n-jobs` 8; on the workstation pass 16–24 for light R workers.
+- Build the work list first (cheap pandas/IO), then hand it to parallel_map — don't
+  interleave heavy serial setup inside the parallel loop.
+- Reference implementation: `08a_composition.py` (collects per-slice propeller jobs, then
+  runs them concurrently). Serial was ~3 h; parallel is single-digit minutes.
+- **CPU-bound exception:** the shuffle null in `08b_disruption_shuffle_test.py` uses
+  `use_threads=False` (process pool) — numpy permutation loops are CPU-bound pure Python
+  and the GIL would serialize threads. The worker is a top-level function for picklability.
 
 ## Pipeline architecture decisions (don't re-litigate)
 - **Language:** Python primary (Scanpy/scvi-tools). R subprocess for scDblFinder, propeller, SoupX.
@@ -100,7 +124,8 @@ Every figure should let a reader name the biology — the genes, cell types, or 
 - **Cap labels for readability** (e.g. top ~25 by significance); state how many more exist if truncated.
 - **Gene identifiers must be human-readable.** If var_names are Ensembl IDs, map to symbols (var['symbol']) before labeling — never ship a plot of ENSMUSG IDs.
 - **State the contrast and thresholds on the plot** (what-vs-what, padj/LFC cutoffs).
-- Rule of thumb: if the figure can't tell you which genes/cell types/pathways are involved, it isn't done yet.
+- **Significance must be obvious**, not a subtle mark. 8a heatmaps outline FDR<0.05 cells; volcanoes star/label significant genes. Rule of thumb: if the figure can't tell you which genes/cell types/pathways are involved, it isn't done yet.
+- **Forest vs bar plots:** the 8b disruption mirror plot uses bars (showing MAGNITUDE of LOST/GAINED counts); the 8b shuffle-test plot uses bars for `|Δ|` with labels ALWAYS placed OUTSIDE the bars (never overlapping). The two visualizations answer different questions — bars in the disruption plot describe what was observed; the shuffle-test bars + within-stratum panel quantify whether the observation deviates from the k-preserving null.
 
 ## Isolate fragile dependency stacks (don't pin them into the main env)
 When a tool drags an incompatible dependency stack, isolate it — don't pin the main env backward to accommodate it.
@@ -116,7 +141,7 @@ Ambient RNA correction is essential for this dataset — particularly for P1 bra
 - **Tool:** SoupX (CRAN), R subprocess. Avoids CellBender's pickle bug entirely.
 - **Workflow:** cellranger filtered + raw counts → `SoupChannel` → `scran::quickCluster` → `setClusters` → `autoEstCont` (data-driven rho per cluster) → `adjustCounts` → corrected counts written as MTX + barcodes.tsv + features.tsv + soupx_summary.json. Python orchestrator assembles per-sample h5ad.
 - **Manual rho fallback** (`--rho 0.10`) if `scran` install fails — bypasses clustering, uses fixed contamination fraction. ~10% is reasonable for snRNA-seq brain.
-- **Scripts:** `scripts/run_soupx.R` (R worker) + `scripts/02_soupx.py` (Python orchestrator; parallel via `ProcessPoolExecutor`, default `--n-jobs 4`, RAM ~5-15 GB per concurrent sample).
+- **Scripts:** `scripts/run_soupx.R` (R worker) + `scripts/02_soupx.py` (Python orchestrator; parallel via `_utils.parallel_map`, default `--n-jobs 4`, RAM ~5-15 GB per concurrent sample).
 - **Output:** `results/{tissue}/h5ad/02_soupx_corrected/{sample_id}.h5ad` + `tables/02_soupx/02_soupx_summary.csv` (per-sample rho_mean, pct_removed, n_cells).
 - **Smoke test:** `--sample-ids E1 --n-jobs 1` on one sample before launching the full ~57-sample production run.
 - **Downstream wiring:** `02_qc.py` has a prefer-soupx fallback — if `02_soupx_corrected/{id}.h5ad` exists, read that; else fall back to cellranger filtered h5. SoupX changes counts → invalidates Phase 2 onwards; full re-run from Phase 2 needed.
@@ -150,13 +175,22 @@ sed -i "s/multi_class = 'ovr', //;s/multi_class = 'ovr'//" \
 ## CellTypist GPU training via cuML (locked 2026-06-10)
 - **Install:** `cuml-cu12 cudf-cu12` from `https://pypi.nvidia.com`. Downgrades: numba 0.65→0.64, pyarrow 24→23, cuda-toolkit 13→12.9 (CUDA 13 driver is backward-compatible with 12.9 runtime).
 - **Usage:** pass `use_GPU=True` to `celltypist.train()` (valid kwarg, default False).
-- **Speedup observed:** ~9× for class (34 labels: CPU 123 min → GPU 14 min), >40× for subclass (334 labels: CPU >18 hours, never finished → GPU 27 min), ~3× for region (12 labels: CPU est. 60 min → GPU 19 min). Class+subclass+region full retrain ~60 min total on RTX 4500 Ada.
+- **Speedup observed:** ~9× for class (34 labels: CPU 123 min → GPU 14 min), >40× for subclass (334 labels: CPU >18 hours, never finished → GPU 27 min), ~3× for region (12 labels). Class+subclass+region full retrain ~60 min total on RTX 4500 Ada.
 - **Output:** cuML LogReg fit, saved as `sklearn.linear_model._logistic.LogisticRegression` (CellTypist's design) — pkls are interchangeable with CPU-trained versions for inference.
-- **L-BFGS line-search warning** on small problems is a problem-size issue, not a GPU issue. At full-data scale (92K cells × 12K features post-FS), L2 regularization (C=1.0) makes the optimization well-posed even when params > samples (subclass: 4M params, 92K samples).
-- **Why CPU L-BFGS hung on subclass:** L-BFGS is not parallelizable across classes (each iteration computes one gradient over the full multinomial likelihood). Only inner BLAS matmul parallelizes. 334 classes × 92K cells single-threaded = days.
+- **Why CPU L-BFGS hung on subclass:** L-BFGS is not parallelizable across classes (each iteration computes one gradient over the full multinomial likelihood). 334 classes × 92K cells single-threaded = days.
 
 ## Phase 8 conventions
-- **Statistical unit is the animal (donor_id)**, never the cell. Composition = per-donor cell-type counts; DE = pseudobulk (sum raw counts per donor). No dam ID → each pup independent (anti-conservative; caveat carried in `flag`).
+
+**Cross-cutting (8a done; 8b–8g follow the same — wire via the shared helpers):**
+- **Statistical unit is the animal (donor_id), never the cell.** Composition = per-donor cell-type counts; DE = pseudobulk (sum raw counts per donor). No dam ID → each pup independent (anti-conservative; caveat carried in `flag`).
+- **Contrasts are declarative** (`config … contrasts:`, via `_utils.load_contrasts(cfg, kind="de")`) and shared across every 8x stage — never hard-code or synthesize a contrast in a phase script. The set: `early_vs_relaxed_per_age`, `late_vs_relaxed_per_age`, `omnibus_3group_per_age`, `early_vs_late_per_age` (brain only — it lives in the YAML), `within_group_across_age` (DE-only), `group_x_age_interaction` (DE-only). A phase consumes the contrasts it can handle and skips the rest with an announcement (8a skips across-age / interaction / sex-stratified contrasts).
+- **Sex strata are declarative** (`config … strata: {sex: [combined, M, F]}`, via `_utils.iter_strata`). Applied to EVERY contrast in EVERY stage; `combined` = sex stays a covariate, `M`/`F` = subset the donors (sex then auto-drops from the design). Every output row/path carries a `sex` column. This SUPERSEDES the old `within_age_sex_stratified` contrast — remove that from `build_yaml.py` as part of wiring 8b. A stratum/group with only 1 donor is unavoidably skipped (e.g. P1 Relaxed females).
+- **Drop, don't reassign, non-cell-types** — from numerator AND denominator, once up front: contaminants (`subcluster_name` starting `Contamination_` or `=="unresolved"`, from the 08c subcluster objects) and `unassigned*` gate labels (`_utils.unassigned_mask`). Record the dropped per-donor counts/fractions in a diagnostic CSV (`08a_dropped_cells_per_donor.csv` pattern) — never lose them silently. Plots show ONLY real, assigned cell types; the dropped mass lives in the diagnostic table.
+- **Design `~ sex + pool + group`; drop any covariate that is constant OR perfectly aliased with `group` in a slice, and flag `confounded_with_pool`.** Canonical case: P1 `Late_Stress` is Pool3-only → pool ≡ group → rank-deficient → drop `pool`. Use the `aliased_with(df, factor, cov)` pattern from 8a. scVI batch correction does NOT touch count-level tests, so `pool` stays in the design wherever it's estimable.
+- **`min_donors=2` to run a stratum; any group `<3` → `reliability=low_n`** (`config … composition: {min_donors: 2, reliable_donors: 3}`). Trust `ok` rows with a finite effect; `low_n` rows with NaN/inf effect are degenerate (a rare type absent in a tiny group) and inflate the raw FDR<0.05 count — read `reliability==ok` + finite effect for real hits.
+- **Levels & granularities:** brain has region levels (`celltypist_region`) + `whole`; placenta `whole` only. Tiers: brain `celltypist_broad` (broad) + `celltypist_class` (class, canonical 8b/8c key) + subtype (focal coarse types exploded to `subcluster_name`); placenta `celltype_majority` + subtype. Fraction within a slice = cell type ÷ that donor's total cells in the slice (region → ÷ donor's cells in that region; whole → ÷ donor's total cells).
+
+**Stage-specific:**
 - **Corrected p-values everywhere** — propeller FDR (8a), DESeq2 padj (8b), per-collection BH FDR (8c). No raw p-value drives any significance call.
 - **GSEA gene sets = mouse MSigDB via msigdbr** (MH+M2+M5+M8), exported once to refs/msigdb_mouse.tsv. NOT decoupler's get_resource(MSigDB,mouse) — it's broken. FDR corrected WITHIN each collection (sizes differ ~150x); pooled kept as reference.
 - **Multi-database plots = side-by-side panels**, one subplot per collection, figure width scaled to #collections. Use constrained_layout (NOT with bbox_inches='tight' — they fight and clip).
@@ -168,6 +202,40 @@ sed -i "s/multi_class = 'ovr', //;s/multi_class = 'ovr'//" \
 - **8f cross-tissue = six views, all reproducible from 8b/8c CSVs.** Two biologically aligned arms (E12.5 placenta Early → P1/4W/3mo brain Early; E18.5 placenta Late → same; P1 Late carries `confounded_with_pool` flag). Views: DEG overlap (hypergeom), RRHO (custom NumPy), pathway concordance from 8c GSEA, LR cross-tissue mechanistic hypotheses (placental ligand × brain receptor from liana mouseconsensus with `stress_axis` flag column), TF concordance from 8c TF activity, ORA of overlap genes vs MSigDB. The LR table is the publication-quality output.
 - **NO cross-tissue cell-cell communication.** BBB makes literal placenta-cell-to-brain-cell signalling implausible — 8f view 4 (LR from DE) is the correctly framed endocrine/paracrine version.
 - **8g cross-age persistence = brain only.** Placenta has incomplete cross-age factorial; 8g exits cleanly with `tissue: placenta`. Persistence classes: persistent, resolving_early, established_late, P1_only, transient_4W, emergent_3mo, P1_3mo_only, persistent_directionswap. Cross-arm core signature (view 6) = intersection of persistent calls in BOTH arms with consistent direction = paper-quality table.
+
+## Phase 8b follow-ups (locked 2026-06-15)
+Three brain-only scripts operate on the master `08b_de_results.csv` (no DE re-run; the master CSV is already a deterministic function of the integrated h5ad + contrasts YAML). All three skip placenta cleanly — placenta has no `within_group_across_age` contrast (incomplete cross-age factorial; see project doc §2).
+
+**`08b_developmental_disruption.py`** — classifies genes from the `within_group_across_age` contrast (per group, with all three pairwise age tests collapsed to the most-significant pair per gene) into 5 direction classes:
+- `universal` — sig age-DE in all 3 groups (Relaxed, Early, Late). Developmental baseline.
+- `relaxed_only` (`= LOST`) — sig only in Relaxed. Trajectory present in controls, lost under both stress regimens.
+- `stress_shared` (`= GAINED`) — sig in BOTH Early AND Late, NOT in Relaxed. Trajectory absent in controls, induced by both stress regimens.
+- `early_only` / `late_only` — sig in one stress group only.
+Outputs `08b_developmental_disruption_summary.csv` (per sex × level × celltype: counts + mean `|LFC|` per group for the LOST class) + `08b_developmental_disruption_genes.csv` (long-form gene-level direction class assignments).
+
+**`08b_followup_plots.py`** — two plot types per `(sex × level)`:
+- Mirror disruption bar (LOST left red, GAINED right blue, cell types named on Y) + paired `|LFC|` boxplots showing effect-size collapse for LOST-trajectory genes under stress (Relaxed gray / Early red / Late blue).
+- Stress-consistency stacked bars per age — Early-only (red) / Both-sig=convergent (gray) / Late-only (blue). Auto-skips when one of two stress contrasts is missing.
+
+**`08b_disruption_shuffle_test.py`** — the k-preserving permutation null. Reports both permutation-based and analytic-binomial significance.
+- **k-preserving null:** per gene, keep `k_i` = #groups in which it's sig (0/1/2/3) but randomize WHICH groups. Vectorized via per-row argsort of random scores on a `(n_genes, 3)` array. ~1 ms per shuffle on ~20K genes; 1000 shuffles per slice in single-digit seconds.
+- **Per-category analytic binomial p-values** for all 6 disjoint sig-pattern categories (R-only / E-only / L-only / R∩E / R∩L / E∩L), modelling `obs ~ Binom(n_k_stratum, 1/3)`. Enrichment and depletion p-values reported separately; BH-corrected within each direction.
+- **Within-stratum chi-square goodness-of-fit:** tests whether the three k=1 categories (R-only / E-only / L-only) are uniformly distributed and same for the three k=2 categories. Directly addresses "is Relaxed special?"
+- **Output:** `08b_disruption_shuffle_test.csv` with columns: 6 obs counts, `n_k0..n_k3`, 6 categories × 4 p-values (enrichment + depletion + BH for each), `chi2_k1` + `p_chi2_k1` + `chi2_k2` + `p_chi2_k2`, permutation-null sanity check on the LOST/GAINED diff (`null_lost_mean`, `null_gained_mean`, `null_lost_p5/p95`, etc.). Plus the headline two-panel figure: Panel A = mirror `|Δ|` bar (LOST left, GAINED right; solid color for `Δ>0` enrichment, faded for `Δ<0` depletion; labels ALWAYS placed OUTSIDE the bars); Panel B = within-stratum 6-bar breakdown per cell type with dashed reference lines at `n_k1/3` and `n_k2/3`.
+
+## Disruption analysis framing (locked 2026-06-15)
+The headline biological finding for brain `within_group_across_age` is NOT just "LOST > GAINED" — that asymmetry is partly expected from marginal sig-rate maths (the AND requirement on GAINED). The cleanest disruption claim that survives the shuffle test is:
+
+> "When age-DE signal is shared across two groups, Relaxed is almost always one of them. R∩E and R∩L are both massively enriched (↑***) over the k-preserving null in every brain broad cell type, while E∩L (=GAINED) is correspondingly depleted (↓***). Stress conditions independently lose age-trajectory genes from the Relaxed program rather than coordinately gaining new ones."
+
+Supporting evidence at the broad-cell-type level (sex=combined, level=whole, brain main):
+- 3 broad cell types significantly enriched LOST (`p_lost_BH < 0.05`): Olfactory ensheathing (Δ=+165 ↑**), Astrocytes/Ependymal (Δ=+130 ↑**), Vascular (Δ=+37 ↑*).
+- ALL 7 broad cell types significantly depleted GAINED (`p_gained_dep_BH < 0.05`): E∩L counts fall to ~1/3 of null expectation.
+- ALL 7 broad cell types massively enriched R∩E and R∩L over null (binomial enrichment p < 1e-3 for these k=2 categories).
+
+Supporting evidence at the subcluster level: PAM_ATM_Microglia (Δ_LOST=+147 ↑**), BAM (Δ=+92 ↑**), Homeostatic_Microglia (Δ=+9 ↑**), Protoplasmic_Astrocyte (Δ=+334 ↑**), OPC (Δ=+72 ↑*), MFOL (Δ=+17 ↑*).
+
+Methods caveat to include in paper: `within_group_across_age` is pool-confounded by design (each age uses different pools). The k-preserving shuffle test is partially robust to this — each gene's `k_i` is computed across the same pool structure, so the null preserves whatever pool-driven artifacts are present. The signal that exceeds this null is therefore biology beyond the pool structure.
 
 ## Phase 9 — two scientific arms (locked 2026-06-05)
 Cross-species RRHO2 validation runs as TWO arms reported separately, NOT pooled.
@@ -186,39 +254,36 @@ For every phase that takes >10 min on workstation: build a 1-sample (or 1-pool, 
 - Burned ~4 hours on CellBender's checkpoint bug at scale.
 - Burned 30 min on missing `brain.yaml` CellTypist mappings.
 - **Phases that NEED smoke tests:** 1 SoupX, 5 scVI, 7 P1-scANVI (Rosenberg transfer), 8c with --tf, 9 cross-species.
-- **Phases too cheap to need smoke tests:** 0, 2, 3, 4, 6, 7 main (adult CellTypist), 7b, 7d, 8a, 8b, 8d, 8e (under ~30 min wall time per tissue).
+- **Phases too cheap to need smoke tests:** 0, 2, 3, 4, 6, 7 main (adult CellTypist), 7b, 7d, 7e, 8a, 8b, 8b follow-ups, 8d, 8e (under ~30 min wall time per tissue, parallelized).
 
 ## Dev workflow — split at h5 level, not at runtime
 - **dev_split_h5.py** runs ONCE before Phase 0 on dev. Reads the 3 dev h5 files, writes 9 split h5 files (random barcode partition) into `data/dev_split/`, and emits `config/dev_split.yaml`.
 - **No pipeline scripts are dev-aware.** All phase scripts run unchanged with `--config config/dev_split.yaml`.
 - Pseudo-donors are random cell partitions → numbers MEANINGLESS, smoke test of code paths only.
-- **Dev is 4W-only by design.** All 9 pseudo-donors are 4W M Pool1. 8g cannot be exercised meaningfully on dev (one age → every classification = `transient_4W` or `none`). Note: dev being 4W-only means the P1-scANVI branch is NOT exercised on dev — smoke-test it on real P1 data on the WS.
+- **Dev is 4W-only by design.** All 9 pseudo-donors are 4W M Pool1. 8g cannot be exercised meaningfully on dev (one age → every classification = `transient_4W` or `none`). Note: dev being 4W-only means the P1-scANVI branch is NOT exercised on dev — smoke-test it on real P1 data on the WS. Same for 8b follow-ups: they need `within_group_across_age` which requires ≥2 ages.
 
 ## Annotation conventions
 - **Phase 7 uses per-cluster majority voting** (CellTypist convention), not per-cell argmax. Cells in one Leiden cluster share a label; low-purity (<60% majority OR runner-up >25%) clusters announced for manual review.
 - **Phase 7d (subcluster naming) is already cluster-level** — scores aggregate per integer subcluster ID.
+- **Phase 7e (cell-type counts diagnostic)** — per-donor × cell-type counts CSV (brain: 3 granularities × `whole`+regions; placenta: `whole` only). Used to sanity-check 8a propeller inputs and for paper Table S?. Read off the annotated h5ad at `results/{tissue}/h5ad/08_annotated/all_samples.h5ad` (legacy "08_annotated" folder naming for what's logically Phase 7).
 - **Brain Phase 7 = 4-tier, P1 via scANVI (UPDATED 2026-06-12; supersedes the 3-tier/Di-Bella scheme):**
-  - **broad** (`celltypist_broad`, region-FREE, cross-age tier): derived from class per-age — ABC `class_to_broad_csv` for 4W/3mo, `config/rosenberg_class_to_broad.csv` for P1; trailing ` (region)` suffix stripped so all ages align. ~9 classes. Derived in Phase 7 by `derive_brain_broad`. THIS is the cross-age tier (8g persistence, 9 cross-species).
+  - **broad** (`celltypist_broad`, region-FREE, cross-age tier): derived from class per-age — ABC `class_to_broad_csv` for 4W/3mo, `config/rosenberg_class_to_broad.csv` for P1; trailing ` (region)` suffix stripped so all ages align. ~9 classes. THIS is the cross-age tier (8g persistence, 9 cross-species).
   - **class** (`celltypist_class`, canonical 8b/8c key): per-(Leiden cluster × age) MAJORITY vote. Region-TAGGED. ABC 34-vocab for 4W/3mo; Rosenberg ~18-vocab (e.g. CTX Glut, CB GABA) for P1. Two vocabularies coexist by design (per-age native).
   - **subclass** (`celltypist_subclass`, per-cell): ABC 334 for 4W/3mo; raw Rosenberg ~65 fine labels for P1.
   - **region** (`celltypist_region`, per-cell): ABC 12 for 4W/3mo; parsed from Rosenberg label prefix for P1 (CTX/CB/TH/HPF/OLF/STR/MB/non-regional).
-  - **P1 = scANVI label transfer from Rosenberg 2018 P2-brain** (`run_scanvi_p1.py`, GPU subprocess called inside `07_annotation.py` for the P1 branch only — mirrors the R-subprocess pattern). Reference built by `prepare_rosenberg_reference.py` (→ `refs/rosenberg_p2brain_reference.h5ad` + 3 grouping CSVs in `config/`). Di Bella ABANDONED: cortex-only, mislabeled 42% of whole-brain P1 as erythrocyte (region-coverage failure, NOT ambient — SoupX had stripped Hb). 4W/3mo = CellTypist from ABC. `07c_label_transfer.py` DELETED.
-  - YAML: `annotation.scanvi_p1.{ref_h5ad, labels_key, config_dir}` for P1; `annotation.celltypist_models.<age>.{class,subclass,region}` for adults (P1 entry null).
-  - The gate/majority/audit path is SHARED across all ages — P1 differs only in where the per-cell label comes from (scANVI vs CellTypist); everything downstream is common code.
+  - **P1 = scANVI label transfer from Rosenberg 2018 P2-brain** (`run_scanvi_p1.py`, GPU subprocess called inside `07_annotation.py` for the P1 branch only). Di Bella ABANDONED: cortex-only, mislabeled 42% of whole-brain P1 as erythrocyte (region-coverage failure, NOT ambient — SoupX had stripped Hb). 4W/3mo = CellTypist from ABC. `07c_label_transfer.py` DELETED.
 - **Placenta Phase 7 has no CellTypist model.** Curated literature markers + STAMP Spearman correlation against Liu 2024 reference (35 cell types, E9.5-E18.5). Tier 1+2 label-collapse (35 → ~21) + STRICT canonical-marker gates (Neutrophil / Lymphoid / Megakaryocyte) + Xist + Y-gene compartment scoring + EPC/TSC negative-control QC. Canonical key `celltype_majority`. NO broad tier yet — add a compartment grouping (trophoblast/decidua/immune/vascular/erythroid) when Phase 8f cross-tissue needs it.
-- **⚠ Brain plot-vs-data provenance (2026-06-12):** Phase 7 brain ran ONCE; `celltypist_broad` was then patched region-free in place via `scripts/patch_broad_regionfree.py` (no Phase 7 re-run), and broad + per-age-class UMAPs replotted via `scripts/replot_brain_annotation.py`. The h5ad is authoritative; not every plot in `plots/07_annotation/` came from one clean run. A clean `07_annotation.py` re-run reconciles everything. The annotation/plotting SPLIT was discussed but DEFERRED (no time) — for now plots are still coupled to the annotation run.
 
 ## Brain marker gate (updated 2026-06-12)
-STRICT canonical-marker gates for borderline brain calls. Runs over ALL (cluster×age) rows identically (P1 included). CellTypist/scANVI conf says "how sure among trained classes" — can't verify the cell expresses the biology the label requires. Gate catches false positives.
+STRICT canonical-marker gates for borderline brain calls. Runs over ALL (cluster×age) rows identically (P1 included). CellTypist/scANVI conf says "how sure among trained classes" — can't verify the cell expresses the biology the label requires. Gate catches false positives. Demoted labels become `unassigned_immune` / `unassigned_glia` / `unassigned_vascular` / `unassigned_erythroid` — which Phase 8 then DROPS (see Phase 8 conventions).
 
 - **`BRAIN_GATE_CONFIG` in `scripts/07_annotation.py`** — five gated types:
   - microglia: ≥2 of {P2ry12, Tmem119, Csf1r, Aif1} → `unassigned_immune`. **Cx3cr1 REMOVED — absent from 10x Flex Mouse Transcriptome v2 panel.**
   - astrocyte: ≥2 of {Aqp4, Gja1, Slc1a3, Aldh1l1} → `unassigned_glia`
-  - ol_lineage: ≥1 of {Mbp, Mog, Plp1, Mag, Pdgfra, Cspg4, Olig1, Olig2, Sox10} → `unassigned_glia`. **OPC markers ADDED — OPCs lack mature myelin genes, were wrongly demoted (P1 cluster 48, 11k cells).**
+  - ol_lineage: ≥1 of {Mbp, Mog, Plp1, Mag, Pdgfra, Cspg4, Olig1, Olig2, Sox10} → `unassigned_glia`. **OPC markers ADDED.**
   - endothelial: ≥2 of {Cldn5, Pecam1, Cdh5} → `unassigned_vascular`
-  - **erythroid (ADDED): ≥2 of {Hbb-bs, Hbb-bt, Hba-a1, Hba-a2, Alas2} → `unassigned_erythroid`.** Safety net, self-targeting: real placenta erythroid (Hb high, 91% express ≥2) pass; false brain calls (Hb=background) demote. With scANVI/Rosenberg, P1 has no erythroid labels → 0 demotions; gate is belt-and-suspenders.
+  - **erythroid: ≥2 of {Hbb-bs, Hbb-bt, Hba-a1, Hba-a2, Alas2} → `unassigned_erythroid`.**
 - **`MARKER_PRESENCE_THRESHOLD = 0.20`** — marker "present" if ≥20% of cells in (cluster, age) have lognorm > 0.
-- **Keyword matching is case-insensitive substring** on `winner_class`.
 - **Audit CSV columns:** `markers_checked`, `markers_present`, `gate_outcome` (`no_gate`|`passed`|`demoted`), `gate_label`.
 - **Production run 2026-06-12:** 4 demotions (Astro-Epen, weak astro markers), 0 erythroid demotions.
 
@@ -229,11 +294,23 @@ Diagnostic CSV `tables/07_annotation/07_annotation_age_composition_sanity.csv` f
 - Current rules: radial glia / intermediate progenitor / IPC / neuroblast / glioblast / erythrocyte / erythroid progenitor → expected only at P1.
 - Production run 2026-06-12: 0 flags (good).
 
+## 8b DE visualization blocklist (locked 2026-06-15)
+The 8b master CSV reports DE on ALL genes. For visualization (heatmap top rows, bubble top rows, dotplot gene picks, volcano labels, RRHO labels), some genes are excluded by default — they overwhelm headline figures with technical / ambient signal, not stress biology.
+
+- **`BLOCKLIST_FOR_VIZ` in `scripts/08b_de_summary.py`** — 17 genes:
+  - Erythroid (residual ambient even after SoupX): Hbb-bs, Hbb-bt, Hba-a1, Hba-a2, Hbb-b1, Hbb-b2, Hbb-y, Hbb-bh1, Hbb-bh2, Alas2.
+  - Sex-linked (escape sex-stratified design): Xist, Tsix, Ddx3y, Uty, Eif2s3y, Kdm5d, Eif2s3x.
+- **`BLOCKLIST_PREFIXES = ("mt-",)`** — all mitochondrial transcripts (`mt-Co1`, `mt-Nd1`, etc.).
+- **Master CSV is UNFILTERED.** The blocklist applies at TOP-N selection time only.
+- **`--no-blocklist` CLI flag** to disable for QA / sensitivity analysis.
+- Why these? In P1 brain, residual Hb in the master CSV showed up as ~650 sig age-DE genes in the `within_group_across_age` contrast — direction consistent across ALL groups including Relaxed. That's developmental erythroid signal (nucleated erythroblasts in residual vasculature, see Phase 1 = SoupX), NOT stress biology. Excluding them from visualization keeps the headline figures focused.
+
 ## Plot format strategy (locked 2026-06-05)
 - **Default: PNG @ 300 DPI** for all pipeline plots. Cell-level UMAPs with 600K dots aren't suitable for pure SVG.
 - **Paper figures only** (~5-10 plots): refactor to PNG + PDF hybrid via `_utils.savefig(fig, path, dpi=300)`.
-- Don't refactor all 13 plotting scripts. Targeted post-Phase 8 update only.
+- Don't refactor all plotting scripts. Targeted post-Phase 8 update only.
 - **on-data UMAP labels require categorical dtype** — cast the color column to `category` before `sc.pl.umap(..., legend_loc="on data")`, else scanpy silently draws nothing.
+- **constrained_layout fights `bbox_inches="tight"`** — `_utils.safe_fig` (and the local copy in `08b_followup_plots.py`/`08b_disruption_shuffle_test.py`) auto-detects and skips the bbox tightening when constrained_layout is active. Suptitle on a constrained_layout figure should NOT pass `y=` (let constrained_layout reserve title space automatically); footnotes go to `y=0.005` inside the figure not `y=-0.02`.
 
 ## UMAP determinism (locked 2026-06-05)
 - **Explicit `random_state`** in Phase 5 + Phase 6 (scanpy default has no seed).
@@ -250,12 +327,18 @@ Diagnostic CSV `tables/07_annotation/07_annotation_age_composition_sanity.csv` f
 - **Plots also in per-phase subfolders**: `plots/<phase_dir>/...`.
 - **Filenames carry the phase prefix** for identifiability when copied out.
 - **Subcluster runs go to suffixed folders** (`plots/08e_communication_subcluster_excitatory_neurons/...`).
+- **8b follow-ups share the 08b_de phase folder** — both tables and plots. Plots live under `plots/08b_de/summary/{disruption,consistency,shuffle_test}/{sex}/{level}.png`. Tables alongside the main 8b results CSV in `tables/08b_de/`.
 
 ## Offline-audit CSVs (no workstation access post-run)
-- **02_soupx** `02_soupx_summary.csv` — per-sample rho_mean, rho_min, rho_max, pct_removed, n_cells, n_clusters, elapsed_sec, mode (autoEst | manual). Lets you spot-check whether SoupX over-corrected any sample.
-- **07** `07_annotation_class_per_cluster_age.csv` — augmented with `markers_checked`, `markers_present`, `gate_outcome`, `gate_label`. Reviewers can verify any gated label without re-running.
+- **02_soupx** `02_soupx_summary.csv` — per-sample rho_mean, rho_min, rho_max, pct_removed, n_cells, n_clusters, elapsed_sec, mode (autoEst | manual).
+- **07** `07_annotation_class_per_cluster_age.csv` — augmented with `markers_checked`, `markers_present`, `gate_outcome`, `gate_label`.
 - **07** `07_annotation_age_composition_sanity.csv` — developmentally-implausible (cluster × age) rows.
+- **07e** `07e_celltype_counts.csv` — per-donor × cell-type counts (brain: 3 granularities × whole+regions; placenta: whole only). Sanity-check for 8a inputs; paper Table S?.
+- **8a** `08a_dropped_cells_per_donor.csv` — per-donor contaminant + unassigned counts/fractions (the mass dropped from the tested composition).
 - **8b** `08b_de_gene_expression_per_sample.csv` — per-sample mean lognorm of DE genes, keyed celltype × gene × sample_id.
+- **8b follow-ups** `08b_developmental_disruption_summary.csv` — per (sex × level × celltype): 5 direction-class gene counts (universal / relaxed_only=LOST / stress_shared=GAINED / early_only / late_only) + mean `|LFC|` per group for the LOST class (the effect-size collapse columns).
+- **8b follow-ups** `08b_developmental_disruption_genes.csv` — long-form gene-level direction class assignments per (sex × level × celltype × gene).
+- **8b follow-ups** `08b_disruption_shuffle_test.csv` — k-preserving null per (sex × level × celltype): 6 disjoint sig-pattern category counts (R-only / E-only / L-only / R∩E / R∩L / E∩L), `n_k0..n_k3`, 6 categories × {enrichment p, depletion p} × {raw, BH}, within-stratum chi-square (`chi2_k1`, `chi2_k2` + p-values), permutation-null sanity check on the LOST/GAINED diff. Headline columns for the paper: `obs_lost`, `obs_gained`, `obs_r_only`, `obs_re_only`, `obs_el_only`, `p_lost_BH`, `p_gained_dep_BH`, `p_re_only_enr_BH`, `p_el_only_dep_BH`.
 - **8c** `08c_pathway_leading_edge.csv` — genes driving each significant pathway with log2FC + direction.
 - **8c** `08c_tf_activity.csv` — TF activity scores + FDR per contrast×celltype×TF.
 - **8d** `08d_trajectory_paga_edge_diagnostics.csv` — per cell-type-pair edge audit.
@@ -284,6 +367,7 @@ When presenting files in a Claude response, ALWAYS say which directory each one 
     poller@172.17.213.147:/home/poller/BAP-BrainPlacenta/<path> \
     /Users/shuppar/Downloads/BAP_data_1/Analysis/<path>
   ```
+- **WS results saved on Mac under `results_WS/`** (not `results/`), in matching `{tissue}/{plots,tables}/<phase>` subfolders.
 - **tmux for any multi-minute job.** Detach `Ctrl-b d`, reattach `tmux attach -t <name>`, list `tmux ls`.
 - **Pool → contents map:**
   - Pool1: 16 brain (3mo all groups + 4W males)

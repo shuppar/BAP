@@ -224,7 +224,13 @@ sex_markers:
   x_linked:
   - Xist
 composition:
-  min_donors: 3
+  min_donors: 2
+  reliable_donors: 3
+strata:
+  sex:
+  - combined
+  - M
+  - F
 pathways:
   geneset_tsv: refs/msigdb_mouse.tsv
   collections:

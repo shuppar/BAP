@@ -291,11 +291,8 @@ BRAIN_CONTRASTS = {
         "pairwise": [["P1", "4W"], ["4W", "3mo"], ["P1", "3mo"]],
         "flag": "confounded_with_pool",
     },
-    "within_age_sex_stratified": {
-        "description": "Stress contrasts within each sex × age — exploratory (n=2)",
-        "design": "~ pool + group", "group_by": ["age", "sex"], "test": "group",
-        "levels": ["Early_Stress", "Relaxed"], "flag": "underpowered_exploratory",
-    },
+    # NOTE: within_age_sex_stratified was REMOVED — superseded by the declarative
+    # sex strata (combined/M/F applied to EVERY contrast via _utils.iter_strata).
     "group_x_age_interaction": {
         "description": "Does the stress effect change with age?",
         "design": "~ sex + pool + group * age", "test": "group:age",

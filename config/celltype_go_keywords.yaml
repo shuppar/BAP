@@ -1,0 +1,271 @@
+# config/celltype_go_keywords.yaml
+#
+# Per-cell-type GO term relevance keywords. Used by scripts/build_go_relevance.py
+# to keyword-filter the ~9,000+ GO terms in refs/msigdb_mouse.tsv into a
+# cell-type-specific subset that 08c_pathways_summary.py uses for selective
+# labeling of M5 panels.
+#
+# Keys are RAW cell type names as they appear in the 8c output CSVs (the
+# `celltype` column). Quotes required where the name has spaces, hyphens, etc.
+#
+# Matching is case-insensitive substring against the FULL gs_name
+# (e.g. "GOBP_REGULATION_OF_INFLAMMATORY_RESPONSE"). Keyword "INFLAMMATORY"
+# matches that term. Keyword "B_CELL" matches "GOBP_B_CELL_ACTIVATION".
+#
+# Edit freely. After editing, re-run:
+#   uv run python scripts/build_go_relevance.py
+# That regenerates config/celltype_go_relevance.yaml — the actual list of
+# matched GO term names used at plot time.
+#
+# _shared block: keywords added to EVERY cell type in that tissue.
+
+placenta:
+  _shared:
+    keywords:
+      - PLACENTA
+      - PLACENTAL
+      - IMPLANTATION
+      - EXTRAEMBRYONIC
+      - HYPOXIA
+      - EMBRYONIC_DEVELOPMENT
+
+  "B cell":
+    keywords:
+      - B_CELL
+      - BCR
+      - B_LYMPHOCYTE
+      - IMMUNOGLOBULIN
+      - ANTIBODY
+      - HUMORAL_IMMUNE
+      - PLASMA_CELL
+      - GERMINAL_CENTER
+      - CLASS_SWITCH
+
+  "DSC":   # Decidual Stromal Cell
+    keywords:
+      - DECIDUAL
+      - DECIDUALIZATION
+      - UTERINE
+      - ENDOMETRIAL
+      - ENDOMETRIUM
+      - ESTROGEN
+      - PROGESTERONE
+      - PROLACTIN
+      - STROMAL
+      - EXTRACELLULAR_MATRIX
+      - COLLAGEN
+      - FIBROBLAST
+
+  "Endothelium":
+    keywords:
+      - ENDOTHELIAL
+      - ANGIOGENESIS
+      - VASCULOGENESIS
+      - BLOOD_VESSEL
+      - VASCULATURE
+      - VASCULAR
+      - VASODILATION
+      - VASOCONSTRICTION
+      - HEMOSTASIS
+      - COAGULATION
+      - NITRIC_OXIDE
+
+  "Epithelial":
+    keywords:
+      - EPITHELIAL
+      - EPITHELIUM
+      - ADHERENS_JUNCTION
+      - TIGHT_JUNCTION
+      - CILIUM
+      - CILIA
+      - CELL_POLARITY
+      - APICAL
+      - BASOLATERAL
+
+  "Erythrocyte":
+    keywords:
+      - ERYTHROCYTE
+      - ERYTHROPOIESIS
+      - ERYTHROID
+      - HEMOGLOBIN
+      - HEME
+      - PORPHYRIN
+      - IRON_HOMEOSTASIS
+      - GAS_TRANSPORT
+      - OXYGEN_TRANSPORT
+      - BILIRUBIN
+
+  "GC":   # Glycogen cell
+    keywords:
+      - GLYCOGEN
+      - GLUCOSE_METABOLISM
+      - HEXOSE
+      - CARBOHYDRATE_METABOLISM
+      - GLUCONEOGENESIS
+      - GLYCOLYSIS
+      - INSULIN_RESPONSE
+
+  "JZP":  # Junctional Zone Precursor / Progenitor
+    # Generic developmental keywords (PROGENITOR, STEM_CELL, PROLIFERATION,
+    # CELL_DIFFERENTIATION) pulled in Leydig/keratinocyte/cardiac/etc. junk.
+    # Trimmed to trophoblast/junctional-zone-specific terms.
+    keywords:
+      - TROPHOBLAST
+      - TROPHECTODERM
+      - JUNCTIONAL_ZONE
+      - SPONGIOTROPHOBLAST
+      - WNT
+      - BMP
+
+  "LaTP":  # Labyrinth Trophoblast Progenitor
+    # Generic PROGENITOR/PROLIFERATION/PROLIFERATIVE caught cardiac/keratinocyte/
+    # hepatic/lymphoid junk. Trimmed to trophoblast/labyrinth/vasculature.
+    keywords:
+      - TROPHOBLAST
+      - LABYRINTH
+      - LABYRINTHINE
+      - SYNCYTIN
+      - SYNCYTIOTROPHOBLAST
+      - VASCULATURE
+      - ANGIOGENESIS
+
+  "Lymphatic EC":
+    keywords:
+      - LYMPHATIC
+      - LYMPHANGIOGENESIS
+      - ENDOTHELIAL
+      - LYMPH
+      - VESSEL
+      - LYMPH_NODE
+
+  "Lymphoid_mixed":
+    keywords:
+      - LYMPHOCYTE
+      - T_CELL
+      - T_HELPER
+      - REGULATORY_T
+      - CYTOTOXIC_T
+      - NK
+      - NATURAL_KILLER
+      - INTERFERON
+      - LYMPHOID
+      - ADAPTIVE_IMMUNE
+
+  "Megakaryocyte":
+    keywords:
+      - MEGAKARYOCYTE
+      - PLATELET
+      - THROMBOPOIESIS
+      - THROMBOCYTE
+      - COAGULATION
+      - HEMOSTASIS
+
+  "Mesenchyme":
+    keywords:
+      - MESENCHYME
+      - MESENCHYMAL
+      - EXTRACELLULAR_MATRIX
+      - FIBROBLAST
+      - COLLAGEN
+      - EPITHELIAL_MESENCHYMAL_TRANSITION
+      - SMOOTH_MUSCLE
+      - CONNECTIVE_TISSUE
+
+  "Myeloid":
+    keywords:
+      - MYELOID
+      - MACROPHAGE
+      - MONOCYTE
+      - PHAGOCYTOSIS
+      - INFLAMMATORY
+      - INFLAMMATION
+      - INNATE_IMMUNE
+      - CYTOKINE
+      - CHEMOKINE
+      - COMPLEMENT
+      - INTERFERON
+      - TNF
+      - INTERLEUKIN
+      - DENDRITIC_CELL
+      - TOLL_LIKE
+      - NF_KAPPAB
+
+  "NK":
+    keywords:
+      - NK
+      - NATURAL_KILLER
+      - KILLER_CELL
+      - CYTOTOXIC
+      - GRANZYME
+      - PERFORIN
+      - INTERFERON
+      - INTERLEUKIN_2
+      - TARGET_CELL_KILLING
+
+  "Parietal endoderm":
+    keywords:
+      - PARIETAL_ENDODERM
+      - ENDODERM
+      - EXTRAEMBRYONIC
+      - BASEMENT_MEMBRANE
+      - EMBRYO_IMPLANTATION
+      - REICHERT_MEMBRANE
+
+  "S-TGC":  # Sinusoidal Trophoblast Giant Cell
+    keywords:
+      - TROPHOBLAST
+      - GIANT_CELL
+      - PLACENTAL_HORMONE
+      - HORMONE_SECRETION
+      - HORMONE_BIOSYNTHESIS
+      - PROLACTIN
+      - VASCULATURE
+      - SINUSOID
+      - ENDOREDUPLICATION
+      - POLYPLOID
+
+  "SpT":  # Spongiotrophoblast
+    keywords:
+      - SPONGIOTROPHOBLAST
+      - TROPHOBLAST
+      - JUNCTIONAL_ZONE
+      - HORMONE
+      - PROLACTIN
+      - GLYCOGEN
+      - HYPOXIA_RESPONSE
+
+  "SynTI":  # Syncytiotrophoblast I
+    keywords:
+      - SYNCYTIOTROPHOBLAST
+      - SYNCYTIAL
+      - SYNCYTIUM
+      - TROPHOBLAST
+      - PLACENTA
+      - HORMONE_BIOSYNTHESIS
+      - HORMONE_SECRETION
+      - NUTRIENT_TRANSPORT
+      - SYNCYTIN
+      - MULTINUCLEAR
+
+  "SynTII":  # Syncytiotrophoblast II
+    keywords:
+      - SYNCYTIOTROPHOBLAST
+      - SYNCYTIAL
+      - SYNCYTIUM
+      - TROPHOBLAST
+      - PLACENTA
+      - HORMONE_BIOSYNTHESIS
+      - HORMONE_SECRETION
+      - NUTRIENT_TRANSPORT
+      - SYNCYTIN
+      - MULTINUCLEAR
+
+  "Yolk sac epithelial":
+    keywords:
+      - YOLK_SAC
+      - VISCERAL_ENDODERM
+      - NUTRIENT_TRANSPORT
+      - LIPOPROTEIN
+      - APOLIPOPROTEIN
+      - ALPHA_FETOPROTEIN
+      - EXTRAEMBRYONIC

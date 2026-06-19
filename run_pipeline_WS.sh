@@ -179,6 +179,58 @@ done
 
 
 # =============================================================================
+# Phase 7e — Cell-type counts diagnostic (brain + placenta; ~1 min)
+# =============================================================================
+# Per-donor × cell-type count CSV used for sanity-checking 8a propeller
+# inputs and for paper Table S?. Brain: 3 granularities × (whole + regions).
+# Placenta: whole only.
+uv run python scripts/07e_celltype_counts.py --config "$CONFIG"
+# Output: results/<tissue>/tables/07_annotation/07e_celltype_counts.csv
+
+
+# =============================================================================
+# Phase 8b FOLLOW-UPS — brain only (placenta lacks within_group_across_age)
+# =============================================================================
+# Three scripts that operate on the master 08b_de_results.csv (NO re-running
+# of DE needed). Skip these entirely for placenta.
+
+# --- 1. Developmental disruption analysis ---
+# Classifies genes in the within_group_across_age contrast into 5 direction
+# classes: universal / relaxed_only (=LOST) / stress_shared (=GAINED) /
+# early_only / late_only. Writes summary + long-form gene tables.
+uv run python scripts/08b_developmental_disruption.py --config config/brain.yaml
+for ct in immune opc_oligodendrocytes astrocytes_ependymal; do
+  uv run python scripts/08b_developmental_disruption.py --config config/brain.yaml --subcluster "$ct"
+done
+
+# --- 2. Disruption mirror plot + stress-consistency stacked bars ---
+# Per (sex × level): mirror bar of LOST (red, left) vs GAINED (blue, right)
+# with paired |LFC| boxplots showing effect-size collapse in stress; PLUS
+# stress-consistency stacked bars (Early-only / Both-sig / Late-only) per age.
+uv run python scripts/08b_followup_plots.py --config config/brain.yaml
+for ct in immune opc_oligodendrocytes astrocytes_ependymal; do
+  uv run python scripts/08b_followup_plots.py --config config/brain.yaml --subcluster "$ct"
+done
+
+# --- 3. k-preserving null shuffle test + within-stratum binomial breakdown ---
+# Per (sex × level × celltype): tests whether observed LOST/GAINED counts
+# exceed (or fall below) the k-preserving null. Reports binomial enrichment +
+# depletion p-values for all 6 disjoint sig-pattern categories (R-only /
+# E-only / L-only / R∩E / R∩L / E∩L). Headline figure = 2-panel: delta mirror
+# bar + within-stratum 6-bar breakdown per cell type.
+# CPU-bound, use processes (built-in via parallel_map use_threads=False).
+uv run python scripts/08b_disruption_shuffle_test.py --config config/brain.yaml --n-perm 1000 --n-jobs 16
+for ct in immune opc_oligodendrocytes astrocytes_ependymal; do
+  uv run python scripts/08b_disruption_shuffle_test.py --config config/brain.yaml --subcluster "$ct" --n-perm 1000 --n-jobs 16
+done
+# Outputs:
+#   results/brain/tables/08b_de/08b_developmental_disruption_summary.csv
+#   results/brain/tables/08b_de/08b_developmental_disruption_genes.csv
+#   results/brain/tables/08b_de/08b_disruption_shuffle_test.csv (+ subcluster variants)
+#   results/brain/plots/08b_de/summary/{disruption,consistency,shuffle_test}/{sex}/{level}.png
+
+
+# =============================================================================
 # Phase 8c — Pathway/GSEA + TF activity. MAIN + SUBCLUSTER, --tf REQUIRED.
 # =============================================================================
 # SMOKE TEST with one cell type before running full loop.
@@ -243,6 +295,14 @@ uv run python scripts/09_cross_species_validation.py \
 #   results/brain/tables/08f_cross_tissue/08f_lr_cross_tissue.csv
 #   results/brain/tables/08g_cross_age/08g_core_signature_genes.csv
 #   results/brain/tables/08b_de/08b_de_results.csv
+#   results/brain/tables/08b_de/08b_developmental_disruption_summary.csv
+#   results/brain/tables/08b_de/08b_disruption_shuffle_test.csv
 #   results/brain/tables/08c_pathways/08c_pathway_results.csv
 #   results/brain/tables/08c_pathways/08c_tf_activity.csv
 #   results/{tissue}/tables/09_cross_species/*_rrho2.csv  (Phase 9)
+#
+# Paper-quality figures:
+#   results/brain/plots/08b_de/summary/disruption/combined/whole.png
+#       — mirror bar of LOST vs GAINED + effect-size collapse boxes
+#   results/brain/plots/08b_de/summary/shuffle_test/combined/whole.png
+#       — k-preserving null test + within-stratum 6-bar breakdown
