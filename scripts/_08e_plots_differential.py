@@ -276,6 +276,21 @@ def plot_delta_lr_heatmap(baseline_df, grp_a, grp_b, age, magnitude_cutoff, pdir
     # NaN-safe for clustering
     plot_mat = plot_mat.fillna(0)
 
+    # Correlation-metric clustering requires non-constant rows/cols: a row or column
+    # with zero variance yields a NaN correlation distance ("condensed distance
+    # matrix must contain only finite values"). Drop constant rows/cols before
+    # clustering (they carry no pattern); keep a copy for the fallback.
+    _rs = plot_mat.std(axis=1)
+    _cs = plot_mat.std(axis=0)
+    plot_mat_cl = plot_mat.loc[_rs > 0, _cs > 0]
+    n_dropped = (plot_mat.shape[0] - plot_mat_cl.shape[0],
+                 plot_mat.shape[1] - plot_mat_cl.shape[1])
+    if n_dropped != (0, 0):
+        print(f"  [info] delta_lr_heatmap: dropped {n_dropped[0]} constant rows / "
+              f"{n_dropped[1]} constant cols before clustering")
+    # if too little remains to cluster, fall back to the full (unclustered) matrix
+    use_cluster = plot_mat_cl.shape[0] >= 3 and plot_mat_cl.shape[1] >= 3
+
     # Build row annotation: signaling pathway
     row_colors = None
     if pathway_map is not None and not pathway_map.empty:
@@ -312,25 +327,31 @@ def plot_delta_lr_heatmap(baseline_df, grp_a, grp_b, age, magnitude_cutoff, pdir
 
     max_abs = max(float(np.abs(plot_mat.values).max()), 1e-6)
 
-    try:
-        g = sns.clustermap(
-            plot_mat,
-            cmap="RdBu_r",
-            center=0,
-            vmin=-max_abs, vmax=max_abs,
-            row_cluster=True, col_cluster=True,
-            metric="correlation",  # rows; sns uses same for cols by default
-            method="average",
-            row_colors=row_colors,
-            col_colors=col_colors,
-            figsize=(max(7, plot_mat.shape[1] * 0.45 + 4),
-                     max(8, plot_mat.shape[0] * 0.22 + 4)),
-            xticklabels=True, yticklabels=True,
-            cbar_kws={"label": cbar_label},
-            dendrogram_ratio=(0.12, 0.08),
-        )
-    except Exception as e:
-        print(f"  [warn] clustermap failed ({e}); plotting unclustered")
+    g = None
+    if use_cluster:
+        rc = row_colors.reindex(plot_mat_cl.index) if row_colors is not None else None
+        cc = col_colors.reindex(plot_mat_cl.columns) if col_colors is not None else None
+        try:
+            g = sns.clustermap(
+                plot_mat_cl,
+                cmap="RdBu_r",
+                center=0,
+                vmin=-max_abs, vmax=max_abs,
+                row_cluster=True, col_cluster=True,
+                metric="correlation",
+                method="average",
+                row_colors=rc,
+                col_colors=cc,
+                figsize=(max(7, plot_mat_cl.shape[1] * 0.45 + 4),
+                         max(8, plot_mat_cl.shape[0] * 0.22 + 4)),
+                xticklabels=True, yticklabels=True,
+                cbar_kws={"label": cbar_label},
+                dendrogram_ratio=(0.12, 0.08),
+            )
+        except Exception as e:
+            print(f"  [warn] clustermap failed ({e}); plotting unclustered")
+            g = None
+    if g is None:
         fig, ax = plt.subplots(figsize=(max(6, plot_mat.shape[1] * 0.45 + 2),
                                         max(8, plot_mat.shape[0] * 0.22 + 2)))
         im = ax.imshow(plot_mat.values, aspect="auto", cmap="RdBu_r",

@@ -485,6 +485,54 @@ def plot_delta_chord(diff_df, contrast_name, age, pdir, fdr_thresh=FDR_THRESH, f
 
 
 # ---------------------------------------------------------------------------
+# Sender / receiver up-down bars (differential polarization, FDR-backed)
+# ---------------------------------------------------------------------------
+
+def plot_sender_receiver_updown_bars(diff_df, contrast_name, age, pdir, fdr=0.05):
+    """Per cell type: # significantly UP vs DOWN differential LR pairs, split by role
+    (as sender / as receiver). The honest summary of differential signalling
+    polarization (matches the 8b per-celltype up/down structure). FDR-backed."""
+    d = diff_df[(diff_df["contrast_name"] == contrast_name) &
+                (diff_df["age"].astype(str) == str(age))].copy()
+    d = d.dropna(subset=["interaction_stat", "interaction_padj"])
+    d = d[d["interaction_padj"] < fdr]
+    if d.empty:
+        return
+    d["dir"] = np.where(d["interaction_stat"] > 0, "up", "down")
+    snd = d.groupby(["source", "dir"]).size().unstack("dir").fillna(0)
+    rcv = d.groupby(["target", "dir"]).size().unstack("dir").fillna(0)
+    for df_ in (snd, rcv):
+        for col in ("up", "down"):
+            if col not in df_.columns:
+                df_[col] = 0
+    cts = sorted(set(snd.index) | set(rcv.index),
+                 key=lambda c: -(snd.reindex([c]).fillna(0).values.sum()
+                                 + rcv.reindex([c]).fillna(0).values.sum()))
+    if not cts:
+        return
+    y = np.arange(len(cts))
+    fig, axes = plt.subplots(1, 2, figsize=(11, max(4, len(cts) * 0.34 + 1)), sharey=True)
+    for ax, mat, role in ((axes[0], snd, "as sender"), (axes[1], rcv, "as receiver")):
+        up = mat.reindex(cts)["up"].fillna(0).values
+        dn = -mat.reindex(cts)["down"].fillna(0).values
+        ax.barh(y, up, color="#d73027", label="up in stress")
+        ax.barh(y, dn, color="#4575b4", label="down in stress")
+        ax.axvline(0, color="k", lw=0.6)
+        ax.set_yticks(y); ax.set_yticklabels(cts, fontsize=7)
+        ax.set_title(role, fontsize=9)
+        ax.set_xlabel("# sig LR pairs (← down | up →)")
+    axes[0].invert_yaxis()
+    axes[0].legend(fontsize=7, loc="lower right", frameon=False)
+    fig.suptitle(f"Differential signalling polarization — {contrast_name} | {age}\n"
+                 f"sig LR pairs at FDR<{fdr}, by cell-type role", fontsize=10)
+    fig.tight_layout()
+    out = pdir / f"updown_bars_{_slug(contrast_name)}_{_slug(age)}.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Plot: {out.name}")
+
+
+# ---------------------------------------------------------------------------
 # Sender / receiver bubble (FIXED: area-scaled, leader-line labels)
 # ---------------------------------------------------------------------------
 

@@ -123,9 +123,11 @@ def plot_delta_chord_diagram(baseline_df, age, magnitude_cutoff, pdir):
 # Network graph (per-sender style, like reference image)
 # ============================================================================
 
-def plot_network_graph(baseline_df, group, age, magnitude_cutoff, pdir):
+def plot_network_graph(baseline_df, group, age, magnitude_cutoff, pdir, level=None):
     """Network graph: one panel per source cell type, edges to targets.
-    Edge width = n active LR pairs. Matches reference image style."""
+    Edge width = n active LR pairs. Matches reference image style.
+    If `level` is given, the slice is restricted to that level (e.g. a brain region
+    or 'whole'); the level is appended to the title + filename."""
     try:
         import networkx as nx
     except ImportError:
@@ -135,6 +137,8 @@ def plot_network_graph(baseline_df, group, age, magnitude_cutoff, pdir):
         (baseline_df["group"] == group) & (baseline_df["age"] == age) &
         (baseline_df["magnitude_rank"] < magnitude_cutoff)
     ]
+    if level is not None and "level" in active.columns:
+        active = active[active["level"].astype(str) == str(level)]
     if active.empty:
         return
 
@@ -184,13 +188,175 @@ def plot_network_graph(baseline_df, group, age, magnitude_cutoff, pdir):
     for ax in axes_flat[len(sources):]:
         ax.set_visible(False)
 
-    fig.suptitle(f"LR network: {group} | {age}\n"
+    lvl_tag = f" | level={level}" if level is not None else ""
+    fig.suptitle(f"LR network: {group} | {age}{lvl_tag}\n"
                  f"(magnitude_rank<{magnitude_cutoff}; edge width=n active LR pairs)",
                  fontsize=10)
-    out = pdir / f"network_graph_{_slug(group)}_{_slug(age)}.png"
+    lvl_slug = f"_{_slug(level)}" if level is not None else ""
+    out = pdir / f"network_graph_{_slug(group)}_{_slug(age)}{lvl_slug}.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     print(f"  Plot: {out.name}")
+
+
+def _drop_unassigned(df):
+    """Remove unassigned_* / contamination pseudo-types from source+target."""
+    if df.empty:
+        return df
+    bad = df["source"].astype(str).str.startswith(("unassigned", "Contamination", "unresolved")) | \
+          df["target"].astype(str).str.startswith(("unassigned", "Contamination", "unresolved"))
+    return df[~bad]
+
+
+def _draw_focal_fan_grid(edges, cell_types, sources, value_col, sign_col,
+                         title, out_png, sqrt_scale=True):
+    """Shared focal-fan grid renderer. edges has columns source,target,<value_col>,
+    <sign_col>. width = sqrt(value/max) (field-standard for network edges);
+    colour = red(+)/blue(−) from sign_col."""
+    try:
+        import networkx as nx
+    except ImportError:
+        return False
+    if edges.empty or len(cell_types) < 2:
+        return False
+    G_full = nx.DiGraph(); G_full.add_nodes_from(cell_types)
+    pos = nx.circular_layout(G_full)
+    vmax = float(edges[value_col].abs().max()) or 1.0
+
+    ncols = min(3, len(sources))
+    nrows = int(np.ceil(len(sources) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows),
+                             constrained_layout=True)
+    axes_flat = np.array(axes).flatten() if len(sources) > 1 else [axes]
+
+    for ax, src in zip(axes_flat, sources):
+        se = edges[edges["source"] == src]
+        G = nx.DiGraph(); G.add_nodes_from(cell_types)
+        for _, r in se.iterrows():
+            G.add_edge(r["source"], r["target"], v=r[value_col], s=r[sign_col])
+        def _w(val):
+            frac = abs(val) / vmax
+            frac = np.sqrt(frac) if sqrt_scale else frac
+            return frac * 5.5 + 0.4
+        widths = [_w(G[u][v]["v"]) for u, v in G.edges()]
+        ecolors = ["#d73027" if G[u][v]["s"] > 0 else "#4575b4" for u, v in G.edges()]
+        nx.draw_networkx_nodes(G, pos, ax=ax, node_size=300,
+                               node_color=["white"] * len(cell_types),
+                               edgecolors="gray", linewidths=0.8)
+        nx.draw_networkx_nodes(G, pos, ax=ax, nodelist=[src],
+                               node_size=520, node_color="0.3", alpha=0.9)
+        nx.draw_networkx_labels(G, pos, ax=ax, font_size=7)
+        nx.draw_networkx_edges(G, pos, ax=ax, width=widths, edge_color=ecolors,
+                               arrows=True, arrowsize=12,
+                               connectionstyle="arc3,rad=0.1", alpha=0.85)
+        ax.set_title(src, fontsize=9, fontweight="bold")
+        ax.axis("off")
+    for ax in axes_flat[len(sources):]:
+        ax.set_visible(False)
+
+    fig.suptitle(title, fontsize=10)
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+    return True
+
+
+def _baseline_edge_metrics(b, test_group, ref_group, spec_fdr):
+    """Per (source,target): n_changed (count of specificity-sig pairs with |Δ|>0)
+    and sum_abs_delta (Σ|Δ score|), plus net sign (Σ Δ). Δ per pair =
+    mean(test score) − mean(ref score), score = 1 − magnitude_rank."""
+    b = b.copy()
+    if "specificity_fdr" in b.columns:
+        key = ["source", "target", "ligand_complex", "receptor_complex"]
+        b["_ok"] = b["specificity_fdr"] <= spec_fdr
+        b = b[b.groupby(key)["_ok"].transform("any")]
+    if b.empty:
+        return pd.DataFrame()
+    b["score"] = 1.0 - b["magnitude_rank"].astype(float)
+    pp = b.pivot_table(index=["source", "target", "ligand_complex", "receptor_complex"],
+                       columns="group", values="score", aggfunc="mean")
+    if test_group not in pp.columns or ref_group not in pp.columns:
+        return pd.DataFrame()
+    pp["d"] = pp[test_group].fillna(0) - pp[ref_group].fillna(0)
+    pp = pp[pp["d"].abs() > 1e-9]
+    if pp.empty:
+        return pd.DataFrame()
+    g = pp.reset_index().groupby(["source", "target"])
+    out = pd.DataFrame({
+        "n_changed": g.size(),
+        "sum_abs_delta": g["d"].apply(lambda x: np.abs(x).sum()),
+        "net_delta": g["d"].sum(),
+    }).reset_index()
+    return out
+
+
+def _differential_edge_metrics(d, contrast_name, age, fdr):
+    """Per (source,target): n_sig (FDR<fdr LR pairs), sum_abs_stat (Σ|interaction_stat|),
+    net_stat (Σ interaction_stat for sign)."""
+    d = d[(d["contrast_name"] == contrast_name) & (d["age"].astype(str) == str(age))].copy()
+    d = d.dropna(subset=["interaction_stat", "interaction_padj"])
+    d = d[d["interaction_padj"] < fdr]
+    if d.empty:
+        return pd.DataFrame()
+    g = d.groupby(["source", "target"])
+    out = pd.DataFrame({
+        "n_changed": g.size(),
+        "sum_abs_stat": g["interaction_stat"].apply(lambda x: np.abs(x).sum()),
+        "net_stat": g["interaction_stat"].sum(),
+    }).reset_index()
+    return out
+
+
+def plot_delta_network_grid(baseline_df, test_group, ref_group, age, magnitude_cutoff,
+                            pdir, spec_fdr=0.05, level=None,
+                            metric="count", arm="baseline", differential_df=None,
+                            contrast_name=None, fdr=0.05):
+    """Δ focal-fan grid (one panel per source cell type), sqrt-scaled edge widths,
+    unassigned_* dropped. Four variants:
+
+      arm='baseline'     metric='count'      → width=√(# changed specificity-sig pairs)
+      arm='baseline'     metric='magnitude'  → width=√(Σ|Δ score|)
+      arm='differential' metric='count'      → width=√(# FDR<fdr LR pairs)   [placenta]
+      arm='differential' metric='magnitude'  → width=√(Σ|interaction_stat|)  [placenta]
+
+    Colour = net direction (red=up / blue=down in stress). Baseline = DESCRIPTIVE
+    (pooled cells); differential = FDR-backed."""
+    if arm == "baseline":
+        b = baseline_df[(baseline_df["age"] == age) &
+                        (baseline_df["group"].isin([test_group, ref_group]))].copy()
+        if level is not None and "level" in b.columns:
+            b = b[b["level"].astype(str) == str(level)]
+        b = _drop_unassigned(b)
+        if b.empty or "magnitude_rank" not in b.columns:
+            return
+        b = b[b["magnitude_rank"] < magnitude_cutoff]
+        m = _baseline_edge_metrics(b, test_group, ref_group, spec_fdr)
+        value_col = "n_changed" if metric == "count" else "sum_abs_delta"
+        sign_col = "net_delta"
+        arm_tag = "DESCRIPTIVE (baseline, pooled cells, specificity-filtered)"
+        wlabel = "# changed sig pairs" if metric == "count" else "Σ|Δ score|"
+    else:  # differential
+        if differential_df is None or differential_df.empty or contrast_name is None:
+            return
+        m = _differential_edge_metrics(_drop_unassigned(differential_df),
+                                       contrast_name, age, fdr)
+        value_col = "n_changed" if metric == "count" else "sum_abs_stat"
+        sign_col = "net_stat"
+        arm_tag = f"FDR<{fdr} (differential arm)"
+        wlabel = f"# sig pairs (FDR<{fdr})" if metric == "count" else "Σ|interaction_stat|"
+
+    if m.empty:
+        return
+    cell_types = sorted(set(m["source"]) | set(m["target"]))
+    sources = sorted(m["source"].unique())
+    lvl_tag = f" | level={level}" if level is not None else ""
+    title = (f"Δ LR network ({metric}): {test_group} − {ref_group} | {age}{lvl_tag}\n"
+             f"edge width=√({wlabel}); red=up / blue=down in stress; {arm_tag}")
+    lvl_slug = f"_{_slug(level)}" if level is not None else ""
+    out = (pdir / f"delta_grid_{arm}_{metric}_"
+                  f"{_slug(test_group)}_vs_{_slug(ref_group)}_{_slug(age)}{lvl_slug}.png")
+    if _draw_focal_fan_grid(m, cell_types, sources, value_col, sign_col,
+                            title, out, sqrt_scale=True):
+        print(f"  Plot: {out.name}")
 
 
 # ============================================================================

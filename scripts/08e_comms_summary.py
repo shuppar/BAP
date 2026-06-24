@@ -44,6 +44,7 @@ import _08e_plots_baseline as pb
 import _08e_plots_differential as pd_diff
 import _08e_plots_perdonor as pp
 import _08e_plots_stats as ps          # statistically-grounded volcano/dotplot/network/SR
+import _08e_plots_pathway as pw_plot   # per-pathway CCC graphs
 
 PHASE = "08e_communication"
 GROUP_ORDER = ["Relaxed", "Early_Stress", "Late_Stress"]
@@ -72,6 +73,14 @@ def parse_args():
     p.add_argument("--focus-celltypes", default=None,
                    help="Comma-separated cell types to focus Δ heatmaps on "
                         "(default: stress_focused_cell_types from config, else all).")
+    p.add_argument("--node-scheme", default="broad", choices=["broad", "subtype"],
+                   help="Which compute output to plot: 'broad' → 08e_communication/, "
+                        "'subtype' → 08e_communication_subtype/.")
+    p.add_argument("--by-pathway", action="store_true",
+                   help="Draw per-pathway CCC graphs (one chord+network per stress "
+                        "pathway) into 06_by_pathway/. Uses config/stress_pathways_8e.yaml.")
+    p.add_argument("--stress-spec", default="config/stress_pathways_8e.yaml", type=Path,
+                   help="Pathway whitelist + focal map for --by-pathway.")
     p.add_argument("--zscore-rows", action="store_true",
                    help="Z-score rows of the Δ LR heatmap.")
     return p.parse_args()
@@ -124,6 +133,8 @@ def main():
     tissue = cfg.get("tissue", "unknown")
     ref_group = cfg.get("group_reference", "Relaxed")
     label = PHASE if not args.subcluster else f"{PHASE}_subcluster_{args.subcluster}"
+    if args.node_scheme == "subtype" and not args.subcluster:
+        label = f"{PHASE}_subtype"
 
     tdir = Path(cfg["results_dir"]) / "tables" / label
     if not tdir.is_dir():
@@ -170,6 +181,11 @@ def main():
 
     def groups_at(age):
         gs = baseline.loc[baseline["age"].astype(str) == age, "group"].astype(str).unique()
+        return [g for g in GROUP_ORDER if g in gs]
+
+    def groups_at_in(df_slice, age):
+        """Groups present at an age within an arbitrary baseline slice (ordered)."""
+        gs = df_slice.loc[df_slice["age"].astype(str) == str(age), "group"].astype(str).unique()
         return [g for g in GROUP_ORDER if g in gs]
 
     def group_pairs_at(age):
@@ -226,6 +242,7 @@ def main():
                     ps.plot_delta_network(differential, cname, age, d_diff, focus=focus)
                     ps.plot_delta_chord(differential, cname, age, d_diff, focus=focus)
                     ps.plot_delta_celltype_heatmap(differential, cname, age, d_diff)
+                    ps.plot_sender_receiver_updown_bars(differential, cname, age, d_diff)
                 except Exception as e:
                     print(f"  [warn] differential {cname}/{age}: {e}")
         try:
@@ -290,11 +307,189 @@ def main():
             except Exception as e:
                 print(f"  [warn] per_donor {age}: {e}")
 
+    # =======================================================================
+    # 06 BY-PATHWAY — one chord+network per stress pathway (noise-reduced)
+    # =======================================================================
+    if args.by_pathway:
+        print("\n[06_by_pathway] per-pathway CCC graphs")
+        import yaml
+        if not args.stress_spec.is_file():
+            print(f"  [warn] {args.stress_spec} not found — skipping by-pathway.")
+        else:
+            spec = yaml.safe_load(args.stress_spec.read_text())
+            le_path = tdir.parent.parent / "tables" / "08c_pathways" / "08c_pathway_leading_edge.csv"
+            # le lives under the MAIN 8c dir regardless of node scheme/subcluster
+            le_path = Path(cfg["results_dir"]) / "tables" / "08c_pathways" / "08c_pathway_leading_edge.csv"
+            if not le_path.is_file():
+                print(f"  [warn] 8c leading-edge CSV not found: {le_path} — skipping.")
+            else:
+                genesets = pw_plot.load_pathway_genesets(cfg, tissue, spec, le_path)
+                print(f"  loaded {len(genesets)} pathway gene sets: {sorted(_slugmap(genesets))}")
+                # Build contrast specs from what's present in baseline (group/age) +
+                # the canonical primary contrasts. test vs ref(=Relaxed).
+                contrasts = _build_pathway_contrasts(baseline, differential, ref_group)
+                d_pw = pdir_root / "06_by_pathway"
+                d_pw.mkdir(parents=True, exist_ok=True)
+                pw_plot.plot_by_pathway(
+                    genesets, baseline,
+                    differential if not differential.empty else None,
+                    contrasts, d_pw)
+
+                # ---- cross-scheme companion (broad vs subtype, whole level) ----
+                # Load the OTHER scheme's baseline CSV. This run's `label` is either
+                # 08e_communication (broad) or 08e_communication_subtype.
+                base_tables = Path(cfg["results_dir"]) / "tables"
+                broad_csv = base_tables / "08e_communication" / "08e_lr_baseline.csv"
+                sub_csv = base_tables / "08e_communication_subtype" / "08e_lr_baseline.csv"
+                if broad_csv.is_file() and sub_csv.is_file():
+                    print("  cross-scheme companion (broad vs subtype)...")
+                    bb = pd.read_csv(broad_csv, low_memory=False)
+                    bs = pd.read_csv(sub_csv, low_memory=False)
+                    pw_plot.plot_cross_scheme_companion(
+                        genesets, bb, bs, contrasts, d_pw)
+                else:
+                    print("  [info] cross-scheme companion needs BOTH broad + subtype "
+                          "baseline CSVs — run both schemes first; skipping.")
+
+    # =======================================================================
+    # 07 FOCAL-FAN GRIDS — readable per-cell-type fan layout (per-group + Δ)
+    #     across whole + per-pathway + regional. Subtype nodes handled
+    #     automatically when run with --node-scheme subtype.
+    # =======================================================================
+    if not baseline.empty:
+        print("\n[07_focal_grids] focal-fan network grids (per-group + Δ)")
+        levels_present = (sorted(baseline["level"].astype(str).unique())
+                          if "level" in baseline.columns else ["whole"])
+
+        def _grids_for_slice(df_slice, age, out_dir, tag, level=None,
+                             diff_slice=None):
+            out_dir.mkdir(parents=True, exist_ok=True)
+            # per-group descriptive grids (reuse proven plot_network_graph)
+            for g in groups_at_in(df_slice, age):
+                try:
+                    pb.plot_network_graph(df_slice, g, age, cutoff, out_dir, level=level)
+                except Exception as e:
+                    print(f"  [warn] grid {tag} {g}/{age}: {e}")
+            # Δ grids — baseline arm (both tissues): count + magnitude
+            for grp_a, grp_b in group_pairs_at(age):
+                for metric in ("count", "magnitude"):
+                    try:
+                        pb.plot_delta_network_grid(
+                            df_slice, grp_a, grp_b, age, cutoff, out_dir,
+                            level=level, metric=metric, arm="baseline")
+                    except Exception as e:
+                        print(f"  [warn] delta_grid baseline/{metric} {tag} "
+                              f"{grp_a}-{grp_b}/{age}: {e}")
+            # Δ grids — differential arm (placenta): count + magnitude
+            if diff_slice is not None and not diff_slice.empty:
+                for cname in sorted(diff_slice.loc[diff_slice["age"].astype(str) == str(age),
+                                                   "contrast_name"].astype(str).unique()):
+                    # test/ref are encoded in the contrast; pass through for title only
+                    tg, rg = _contrast_groups(cname, ref_group)
+                    for metric in ("count", "magnitude"):
+                        try:
+                            pb.plot_delta_network_grid(
+                                df_slice, tg, rg, age, cutoff, out_dir,
+                                level=level, metric=metric, arm="differential",
+                                differential_df=diff_slice, contrast_name=cname)
+                        except Exception as e:
+                            print(f"  [warn] delta_grid diff/{metric} {tag} "
+                                  f"{cname}/{age}: {e}")
+
+        # whole + regional levels
+        for lvl in levels_present:
+            df_lvl = baseline[baseline.get("level", "whole").astype(str) == lvl] \
+                if "level" in baseline.columns else baseline
+            # differential is whole-only (no level column) → only feed it at whole
+            diff_for_lvl = differential if (lvl == "whole" and not differential.empty) else None
+            for age in sorted(df_lvl["age"].astype(str).unique()):
+                _grids_for_slice(df_lvl, age, pdir_root / "07_focal_grids" / lvl, lvl,
+                                 level=lvl, diff_slice=diff_for_lvl)
+
+        # per-pathway (whole level), if the spec + 8c leading edge are available
+        if args.by_pathway:
+            import yaml as _yaml
+            if args.stress_spec.is_file():
+                _spec = _yaml.safe_load(args.stress_spec.read_text())
+                _le = Path(cfg["results_dir"]) / "tables" / "08c_pathways" / "08c_pathway_leading_edge.csv"
+                if _le.is_file():
+                    _gs = pw_plot.load_pathway_genesets(cfg, tissue, _spec, _le)
+                    bw = baseline[baseline.get("level", "whole").astype(str) == "whole"] \
+                        if "level" in baseline.columns else baseline
+                    for pw, genes in _gs.items():
+                        mask = pw_plot._in_pathway_mask(bw, genes)
+                        df_pw = bw[mask]
+                        if df_pw.empty:
+                            continue
+                        # differential slice restricted to this pathway's LR pairs
+                        diff_pw = None
+                        if not differential.empty:
+                            dmask = pw_plot._in_pathway_mask(differential, genes)
+                            diff_pw = differential[dmask]
+                            if diff_pw.empty:
+                                diff_pw = None
+                        for age in sorted(df_pw["age"].astype(str).unique()):
+                            _grids_for_slice(df_pw, age,
+                                             pdir_root / "07_focal_grids" / "by_pathway" / pw_plot._slug(pw),
+                                             f"pw:{pw}", diff_slice=diff_pw)
+
     print(f"\n{'='*60}\n✓ Phase 8e summary done. Plots in {pdir_root}/")
     for d in (d_overview, d_base, d_diff, d_sr, d_pd):
         n = len(list(d.glob("*.png")))
         print(f"    {d.name}/: {n} figures")
+    if args.by_pathway:
+        npw = len(list((pdir_root / "06_by_pathway").rglob("*.png")))
+        print(f"    06_by_pathway/: {npw} figures")
+    nfg = len(list((pdir_root / "07_focal_grids").rglob("*.png")))
+    print(f"    07_focal_grids/: {nfg} figures")
     print("=" * 60 + "\n")
+
+
+def _slugmap(genesets):
+    return [k.replace("HALLMARK_", "") for k in genesets]
+
+
+def _contrast_groups(contrast_name, ref_group):
+    """Map a differential contrast name → (test_group, ref_group) for titles.
+    Brain/placenta both encode early/late vs relaxed; fall back to (name, ref)."""
+    cl = contrast_name.lower()
+    if "early_vs_late" in cl or "early_vs_late" in cl:
+        return ("Early_Stress", "Late_Stress")
+    if "early" in cl:
+        return ("Early_Stress", ref_group)
+    if "late" in cl:
+        return ("Late_Stress", ref_group)
+    return (contrast_name, ref_group)
+
+
+def _build_pathway_contrasts(baseline, differential, ref_group):
+    """Primary stress contrasts present in the data: (Early|Late)_Stress vs Relaxed,
+    per age where both groups are present. label = EVR/LVR for filenames; name =
+    the differential contrast_name (for the differential arm join)."""
+    out = []
+    if baseline.empty:
+        return out
+    ga = baseline[["group", "age"]].drop_duplicates()
+    by_age = ga.groupby("age")["group"].apply(lambda s: set(s.astype(str)))
+    # map test group -> (label, differential contrast prefix)
+    specs = [("Early_Stress", "EVR", "early_vs_relaxed"),
+             ("Late_Stress", "LVR", "late_vs_relaxed")]
+    diff_names = set(differential["contrast_name"].astype(str).unique()) \
+        if (differential is not None and not differential.empty) else set()
+    for age, groups in by_age.items():
+        if ref_group not in groups:
+            continue
+        for test_g, label, prefix in specs:
+            if test_g not in groups:
+                continue
+            # find the matching differential contrast_name for this age (brain:
+            # *_per_age; placenta: *_E12.5/*_E18.5) by prefix
+            cname = next((n for n in diff_names
+                          if n.startswith(prefix) and (str(age) in n or n.endswith("per_age"))),
+                         f"{prefix}_per_age")
+            out.append(dict(name=cname, test_group=test_g, ref_group=ref_group,
+                            age=str(age), label=label))
+    return out
 
 
 if __name__ == "__main__":
