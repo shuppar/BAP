@@ -451,3 +451,54 @@ stress_focused_cell_types:
 - excitatory_neurons
 - inhibitory_neurons
 - astrocytes
+trajectory:
+  whole_paga_key: celltypist_broad
+  mature_quantile: 0.66
+  min_donors: 2
+  reliable_donors: 3
+  within_age: true
+  lineages:
+    opc_oligodendrocytes:
+      root: OPC
+      order:
+      - OPC
+      - COP
+      - MFOL
+      - MOL
+      markers:
+      - Pdgfra
+      - Cspg4
+      - Sox10
+      - Mbp
+      - Mog
+      - Plp1
+      - Mag
+    astrocytes_ependymal:
+      root: Radial_Glia
+      order:
+      - Radial_Glia
+      - Protoplasmic_Astrocyte
+      markers:
+      - Vim
+      - Nes
+      - Hes1
+      - Sox2
+      - Aqp4
+      - Gja1
+      - Slc1a3
+      - Aldh1l1
+    immune:
+      root:
+      - PAM_ATM_Microglia
+      - Homeostatic_Microglia
+      order:
+      - PAM_ATM_Microglia
+      - Homeostatic_Microglia
+      markers:
+      - Mki67
+      - Spp1
+      - Igf1
+      - P2ry12
+      - Tmem119
+      - Csf1r
+      - Aif1

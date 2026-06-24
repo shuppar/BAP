@@ -1,0 +1,46 @@
+# config/stress_pathways_8e.yaml
+# Declarative inputs for the Phase-8e per-pathway CCC graphs (decision record:
+# docs/08e_stress_pathway_selection.md). Each `graph_pathways` entry gets its own
+# chord + network (one file each), restricted to LR pairs whose ligand/receptor
+# is a leading-edge gene of that pathway in 8c (FDR<0.05, level==whole, per tissue).
+# Pathway significance comes from 8c; baseline edges are descriptive (Δ score),
+# differential edges are FDR-backed (placenta only).
+#
+# `focal_subclusters` maps each 08c subcluster object -> its parent broad/majority
+# label, used to (a) map substate labels back onto the main object by barcode and
+# (b) collapse substates with < min_node_cells back to the parent.
+
+brain:
+  graph_pathways:
+    - HALLMARK_INFLAMMATORY_RESPONSE
+    - HALLMARK_TNFA_SIGNALING_VIA_NFKB
+    - HALLMARK_IL6_JAK_STAT3_SIGNALING
+    - HALLMARK_IL2_STAT5_SIGNALING
+    - HALLMARK_INTERFERON_GAMMA_RESPONSE
+    - HALLMARK_INTERFERON_ALPHA_RESPONSE
+    - HALLMARK_COMPLEMENT
+    - HALLMARK_TGF_BETA_SIGNALING
+    - HALLMARK_ANGIOGENESIS
+  focal_subclusters:
+    immune: Immune
+    opc_oligodendrocytes: OPC/Oligodendrocytes
+    astrocytes_ependymal: Astrocytes/Ependymal
+
+placenta:
+  graph_pathways:
+    - HALLMARK_INFLAMMATORY_RESPONSE
+    - HALLMARK_TNFA_SIGNALING_VIA_NFKB
+    - HALLMARK_IL6_JAK_STAT3_SIGNALING
+    - HALLMARK_IL2_STAT5_SIGNALING
+    - HALLMARK_INTERFERON_GAMMA_RESPONSE
+    - HALLMARK_INTERFERON_ALPHA_RESPONSE
+    - HALLMARK_COMPLEMENT
+    - HALLMARK_TGF_BETA_SIGNALING
+    - HALLMARK_ANGIOGENESIS
+    - HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION
+    - HALLMARK_COAGULATION
+  focal_subclusters:
+    dsc: DSC
+    endothelium: Endothelium
+    myeloid: Myeloid
+    nk: NK

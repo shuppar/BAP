@@ -330,6 +330,72 @@ PLACENTA_CONTRASTS = {
 
 CONTRASTS = {"brain": BRAIN_CONTRASTS, "placenta": PLACENTA_CONTRASTS}
 
+# -----------------------------------------------------------------------------
+# Phase 8d trajectory (PAGA + diffusion pseudotime). Supplementary/mechanistic.
+#   whole_paga_key : cross-age-aligned tier for the whole-tissue PAGA (Mode A).
+#   mature_quantile: "mature fraction" = fraction of a donor's lineage cells past
+#                    this quantile of the lineage's own pseudotime.
+#   min/reliable_donors: per-group donors to RUN a comparison / to call it 'ok'.
+#   within_age (placenta): run E12.5 / E18.5 separately (age = stress window,
+#                    pool-confounded — pooling ages is uninterpretable).
+#   lineages: focal subcluster (brain) / cell-type-list (placenta) trajectories.
+#     root    : DPT anchor — str, or list of str to run multiple roots (immune:
+#               microglia are states, not a clean lineage, so both PAM_ATM and
+#               Homeostatic are rooted and compared).
+#     order   : expected maturation order (orientation / sign reference only).
+#     markers : genes for the pseudotime-vs-marker trend plot. UNVERIFIED panel
+#               membership — the script intersects with var_names and warn-skips
+#               any not in the 10x Flex Mouse Transcriptome v2 panel (e.g. Cx3cr1
+#               is absent and deliberately excluded from the immune list).
+#     celltypes (placenta only): cell types subset from the main object to form
+#               the trophoblast lineage (no placenta broad/subcluster tier yet).
+# -----------------------------------------------------------------------------
+BRAIN_TRAJECTORY = {
+    "whole_paga_key": "celltypist_broad",   # region-free, cross-age aligned (~9 types)
+    "mature_quantile": 0.66,
+    "min_donors": 2,
+    "reliable_donors": 3,
+    "within_age": True,                     # per-age DPT: a cross-age axis is dominated by the
+                                            # P1-vs-adult gap, not OPC->MOL maturation (smoke test
+                                            # 2026-06-22). Compare groups WITHIN each age (pool ~const,
+                                            # clean except P1 Late). Supersedes the cross-age plan.
+    "lineages": {
+        "opc_oligodendrocytes": {
+            "root": "OPC",
+            "order": ["OPC", "COP", "MFOL", "MOL"],
+            "markers": ["Pdgfra", "Cspg4", "Sox10", "Mbp", "Mog", "Plp1", "Mag"],
+        },
+        "astrocytes_ependymal": {
+            "root": "Radial_Glia",
+            "order": ["Radial_Glia", "Protoplasmic_Astrocyte"],
+            "markers": ["Vim", "Nes", "Hes1", "Sox2", "Aqp4", "Gja1", "Slc1a3", "Aldh1l1"],
+        },
+        "immune": {
+            "root": ["PAM_ATM_Microglia", "Homeostatic_Microglia"],   # state axis, not a lineage
+            "order": ["PAM_ATM_Microglia", "Homeostatic_Microglia"],
+            "markers": ["Mki67", "Spp1", "Igf1", "P2ry12", "Tmem119", "Csf1r", "Aif1"],
+        },
+    },
+}
+
+PLACENTA_TRAJECTORY = {
+    "whole_paga_key": "celltype_majority",
+    "mature_quantile": 0.66,
+    "min_donors": 2,
+    "reliable_donors": 3,
+    "within_age": True,                     # E12.5 (Early-v-Relaxed) / E18.5 (Late-v-Relaxed) separately
+    "lineages": {
+        "trophoblast": {
+            "celltypes": ["LaTP", "SynTI", "SynTII", "S-TGC", "SpT", "JZP", "GC"],
+            "root": "LaTP",                 # labyrinth trophoblast progenitor
+            "order": ["LaTP", "SynTI", "SynTII"],   # labyrinth arm (SpT/JZP/GC branch — PAGA shows it)
+            "markers": ["Gcm1", "Synb", "Ndrg1", "Tpbpa", "Ctsq", "Hand1"],
+        },
+    },
+}
+
+TRAJECTORY = {"brain": BRAIN_TRAJECTORY, "placenta": PLACENTA_TRAJECTORY}
+
 STRESS_FOCUSED_CELL_TYPES = [
     "microglia", "oligodendrocyte_lineage", "excitatory_neurons",
     "inhibitory_neurons", "astrocytes",
@@ -392,6 +458,9 @@ def build_yaml_for_tissue(df: pd.DataFrame, tissue: str) -> dict:
     if tissue in CONTRASTS:
         cfg["contrasts"] = CONTRASTS[tissue]
         cfg["stress_focused_cell_types"] = STRESS_FOCUSED_CELL_TYPES
+    # Phase 8d trajectory (PAGA + DPT) config.
+    if tissue in TRAJECTORY:
+        cfg["trajectory"] = TRAJECTORY[tissue]
     return cfg
 
 

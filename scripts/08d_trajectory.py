@@ -1,70 +1,79 @@
 #!/usr/bin/env python
 """
-08d_trajectory.py — Phase 8d: trajectory analysis.
+08d_trajectory.py — Phase 8d: trajectory analysis (PAGA + diffusion pseudotime).
 
-Two components:
+Supplementary / mechanistic, NOT a headline. Complements the 8a composition
+shifts and the 8b disruption finding by asking whether maturation *progression
+itself* changes under prenatal stress.
 
-  1. PAGA (always runs)
-     Partition-based graph abstraction on the scVI latent. Shows which cell
-     types are transcriptionally adjacent and how that connectivity differs
-     between Early Stress, Late Stress, and Relaxed groups per age.
-     No directionality assumptions — robust and reviewer-friendly.
+TWO MODES
+---------
+A. Whole-tissue PAGA (no --subcluster):
+     PAGA on the cross-age-aligned broad tier (brain: celltypist_broad;
+     placenta: celltype_majority). Connectivity graph + heatmap + edge
+     diagnostics. NO DPT (pseudotime across unrelated broad types is
+     uninterpretable). Does NOT touch the saved X_umap.
 
-  2. Diffusion pseudotime (DPT)
-     Orders cells along a transcriptional continuum anchored at a progenitor
-     root. The study question is whether prenatal stress shifts cells along a
-     lineage axis — valid at every age, so all ages are treated identically.
-     The per-lineage group comparison (Kruskal-Wallis + η²) runs both pooled
-     across ages and split per age, so no age is dropped. Age-split rows carry
-     a pool_age_confound caveat (project doc §2). Small-n rows carry a note to
-     read η² over the p-value.
+B. Focal lineage (--subcluster <lineage>):
+     Loads the 08c subcluster object (brain) or subsets the main object to a
+     trophoblast cell-type list (placenta). Drops contaminants + unassigned,
+     recomputes neighbors + diffmap on the lineage's own X_scVI, then per root:
+       - DPT pseudotime, UMAP, marker-vs-pseudotime trends, per-celltype violin
+       - per-DONOR summary (median pseudotime + mature fraction)
+       - per-(sex stratum) group comparison: animal is the statistical unit
+         (NOT pooled cells — that is pseudoreplication)
 
-What is NOT here and why:
-  - RNA velocity: fundamentally incompatible with 10x Flex. Probes target
-    exons only; intronic/unspliced reads are not captured. 10x Genomics
-    explicitly states velocity is not recommended for Flex data
-    (kb.10xgenomics.com article 25938615598477).
-  - CellRank: its primary value is combining velocity directionality with
-    graph connectivity. Without velocity, ConnectivityKernel-only CellRank
-    duplicates what PAGA already provides (transcriptional adjacency +
-    terminal state identification) with more complexity and a sidecar venv.
-    Not worth it for this dataset.
+PER-DONOR GROUP COMPARISON (the part that earns 8d its place)
+  Each donor -> a scalar (median lineage pseudotime; "mature fraction" past a
+  quantile threshold). Then, on those donor scalars:
+    - Mann-Whitney U for the primary pairwise contrasts
+      (brain: Early-vs-Relaxed + Late-vs-Relaxed [+ Early-vs-Late secondary];
+       placenta within-age: E12.5=Early-vs-Relaxed, E18.5=Late-vs-Relaxed)
+    - Kruskal-Wallis omnibus where >=3 groups (brain only)
+  Effect sizes reported (rank-biserial for MW-U, eta^2 for KW). With ~4
+  donors/group this is underpowered: low_n flagged, read effect size + the
+  per-donor scatter, not the p-value. Sex strata {combined, M, F} iterate on the
+  comparison only (the pseudotime axis is computed once on all cells); M/F low_n.
 
-Design notes:
-  - Pool-age confounding (project doc §2): P1/4W/3mo are dominated by
-    different pools. scVI corrects for pool in the latent, but any cross-age
-    developmental trend must note this caveat in methods.
-  - Focal lineages: oligodendrocyte (OPC→MOL), microglia, astrocyte
-    maturation. Auto-detected from cell type labels.
+AGE HANDLING
+  brain: one DPT axis across all ages; comparison run per-age (groups within an
+         age, pool ~constant) AND all-ages-pooled (flagged pool_age_confound,
+         project doc §2 — age co-varies with pool).
+  placenta: within-age by design (age = stress window, pool-confounded); DPT
+         recomputed separately for E12.5 / E18.5, comparison within each age.
+
+NOT HERE: RNA velocity (10x Flex is probe/exon-only — no spliced/unspliced;
+  10x explicitly does not recommend velocity for Flex). CellRank without
+  velocity only duplicates PAGA. See project doc / INSTRUCTIONS "Trajectory (8d)".
 
 Usage:
-  uv run python scripts/08d_trajectory.py --config config/dev.yaml
+  # whole-tissue PAGA
   uv run python scripts/08d_trajectory.py --config config/brain.yaml
+  uv run python scripts/08d_trajectory.py --config config/placenta.yaml
+  # focal lineage (brain subcluster object)
   uv run python scripts/08d_trajectory.py --config config/brain.yaml \\
-      --root-celltype "Radial glia / NPCs"
+      --subcluster opc_oligodendrocytes
+  # placenta trophoblast (subset of main object, within-age)
   uv run python scripts/08d_trajectory.py --config config/placenta.yaml \\
-      --root-celltype "LaTP"
+      --subcluster trophoblast
 
-Inputs (first that exists):
-  {results_dir}/h5ad/08b_label_transferred/all_samples.h5ad  (Phase 7c)
-  {results_dir}/h5ad/08_annotated/all_samples.h5ad           (Phase 7)
-
-Outputs:
-  {results_dir}/plots/08d_trajectory/
-    paga/
-      paga_by_celltype.png
-      paga_by_group_{age}.png              : one per age
-      paga_transitions_heatmap.png
-      umap_paga_init.png
-    pseudotime/
-      dpt_umap.png                         : pseudotime on UMAP, all cells
-      dpt_violin_by_celltype.png           : all ages
-      dpt_violin_by_group_{lineage}.png    : per focal lineage, ages pooled
-      dpt_group_comparison.png             : Kruskal-Wallis + η², all lineage×age rows
-  {results_dir}/tables/
-    trajectory_paga_connectivities.csv
-    trajectory_dpt_group_comparison.csv    : group_level col = all_ages | age=<X>;
-                                             note col carries pool_age + small_n caveats
+Config block (per tissue YAML):
+  trajectory:
+    whole_paga_key: celltypist_broad     # placenta: celltype_majority
+    mature_quantile: 0.66
+    min_donors: 2                        # per group to run; <3 -> low_n
+    reliable_donors: 3
+    within_age: true                     # placenta only
+    lineages:
+      opc_oligodendrocytes:
+        root: OPC                        # str or list of str (immune has two)
+        order:   [OPC, COP, MFOL, MOL]
+        markers: [Pdgfra, Cspg4, ...]
+      ...
+      trophoblast:                       # placenta: needs `celltypes`
+        celltypes: [LaTP, SynTI, ...]
+        root: LaTP
+        ...
 """
 
 import argparse
@@ -81,196 +90,15 @@ import scanpy as sc
 import scipy.sparse as sp
 import scipy.stats as stats
 
-from _utils import load_config, add_lognorm, phase_table_dir
-
-# RNA velocity is NOT used in this script.
-# 10x Flex probes target exons only — intronic/unspliced reads are not captured
-# and velocity is explicitly not recommended for Flex data by 10x Genomics.
-# Reference: kb.10xgenomics.com article 25938615598477
+from _utils import load_config, add_lognorm, phase_table_dir, iter_strata
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-LABEL_KEY_PRIORITY = [
-    "manual_annotation", "scanvi_celltype", "celltypist_majority", "provisional_celltype",
-]
-
-# Default progenitor cell types (root anchoring for DPT).
-# Ordered by preference — first match in adata wins.
-DEFAULT_ROOT_CELLTYPES = {
-    "brain": [
-        "Radial glia / NPCs", "Radial_Glia", "NPC", "OPC",
-        "Radial glia", "NPCs", "Progenitor",
-    ],
-    "placenta": [
-        "LaTP", "Labyrinth_Trophoblast_Progenitor", "Trophoblast progenitor",
-        "Stem trophoblast",
-    ],
-}
-
-FOCAL_LINEAGES = {
-    "brain": {
-        "Oligodendrocyte lineage": ["OPC", "COP", "NFOL", "MFOL", "MOL",
-                                    "Oligodendrocyte", "oligodendro"],
-        "Microglia":               ["Microglia", "microglia", "DAM", "Homeostatic"],
-        "Astrocyte maturation":    ["Astrocyte", "astrocyte", "Radial glia", "NPC"],
-    },
-    "placenta": {
-        "Trophoblast differentiation": ["LaTP", "SynT", "S-TGC", "Trophoblast",
-                                        "trophoblast", "SpT", "GlyT"],
-    },
-}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def resolve_celltype_key(adata, explicit=None):
-    if explicit:
-        if explicit not in adata.obs.columns:
-            sys.exit(f"ERROR: --celltype-key '{explicit}' not in adata.obs.")
-        return explicit
-    for key in LABEL_KEY_PRIORITY:
-        if key in adata.obs.columns:
-            if key == "manual_annotation" and adata.obs[key].astype(str).eq("").all():
-                continue
-            return key
-    sys.exit("ERROR: no usable cell-type label column. Run Phase 7 first.")
-
-
-def find_root_cell(adata, celltype_key, root_candidates):
-    """Return the obs_name of one cell to use as DPT root.
-
-    Picks the cell closest to the centroid of the first matching root cell type
-    in the scVI latent (X_scVI). Falls back to the first cell of the first
-    cluster if nothing matches.
-    """
-    labels = adata.obs[celltype_key].astype(str)
-    for cand in root_candidates:
-        mask = labels.str.contains(cand, case=False, regex=False)
-        if mask.sum() > 0:
-            sub = adata[mask]
-            centroid = sub.obsm["X_scVI"].mean(axis=0)
-            dists = np.linalg.norm(sub.obsm["X_scVI"] - centroid, axis=1)
-            root_idx = np.argmin(dists)
-            root_name = sub.obs_names[root_idx]
-            print(f"  Root cell type matched: '{cand}' → cell {root_name}")
-            return root_name, cand
-    # Fallback
-    root_name = adata.obs_names[0]
-    print(f"  [warn] No root cell type matched. Falling back to first cell: {root_name}")
-    print(f"         Pass --root-celltype to set a biologically meaningful root.")
-    return root_name, "fallback"
-
-
-def cells_in_lineage(adata, celltype_key, fragments):
-    """Boolean mask for cells whose label contains any fragment (case-insensitive)."""
-    labels = adata.obs[celltype_key].astype(str)
-    mask = pd.Series(False, index=adata.obs_names)
-    for frag in fragments:
-        mask = mask | labels.str.contains(frag, case=False, regex=False)
-    return mask.values
-
-
-def safe_savefig(fig, path, dpi=140):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# 1. PAGA
-# ---------------------------------------------------------------------------
-
-def run_paga(adata, celltype_key, plot_dir, table_dir, seed):
-    """PAGA on scVI neighbors, grouped by cell type.
-
-    Produces: paga_by_celltype.png, paga_by_group_{age}.png,
-              paga_transitions_heatmap.png, trajectory_paga_connectivities.csv
-    """
-    print("\n  [PAGA] Computing...")
-    paga_dir = plot_dir / "paga"
-    paga_dir.mkdir(parents=True, exist_ok=True)
-
-    adata.obs[celltype_key] = adata.obs[celltype_key].astype("category")
-    sc.tl.paga(adata, groups=celltype_key)
-
-    # Save connectivities
-    conn = pd.DataFrame(
-        adata.uns["paga"]["connectivities"].toarray()
-        if sp.issparse(adata.uns["paga"]["connectivities"])
-        else adata.uns["paga"]["connectivities"],
-        index=adata.obs[celltype_key].cat.categories,
-        columns=adata.obs[celltype_key].cat.categories,
-    )
-    conn.to_csv(table_dir / "08d_trajectory_paga_connectivities.csv")
-
-    # PAGA coloured by cell type
-    fig, ax = plt.subplots(figsize=(8, 7))
-    sc.pl.paga(adata, color=celltype_key, ax=ax, show=False,
-               title="PAGA — cell type connectivity",
-               node_size_scale=1.5, edge_width_scale=1.0,
-               fontsize=7, frameon=False)
-    fig.tight_layout()
-    safe_savefig(fig, paga_dir / "paga_by_celltype.png")
-
-    # PAGA coloured by group, per age
-    ages = adata.obs["age"].unique() if "age" in adata.obs.columns else ["all"]
-    for age in ages:
-        sub = adata[adata.obs["age"] == age] if age != "all" else adata
-        if sub.n_obs < 20:
-            continue
-        sub_copy = sub.copy()
-        sub_copy.obs[celltype_key] = sub_copy.obs[celltype_key].astype("category")
-        try:
-            sc.tl.paga(sub_copy, groups=celltype_key)
-            for color_key in ("group", "pool"):
-                if color_key not in sub_copy.obs.columns:
-                    continue
-                fig, ax = plt.subplots(figsize=(7, 6))
-                sc.pl.paga(sub_copy, color=color_key, ax=ax, show=False,
-                           title=f"PAGA age={age}, coloured by {color_key}",
-                           node_size_scale=1.2, frameon=False, fontsize=7)
-                fig.tight_layout()
-                safe_savefig(fig, paga_dir / f"paga_by_{color_key}_age{age}.png")
-        except Exception as e:
-            print(f"    [warn] PAGA for age={age} failed: {e}")
-
-    # Connectivity heatmap
-    fig, ax = plt.subplots(figsize=(max(6, 0.5 * len(conn)), max(5, 0.4 * len(conn))))
-    import seaborn as sns
-    sns.heatmap(conn, ax=ax, cmap="Blues", vmin=0, vmax=1,
-                linewidths=0.3, annot=len(conn) <= 15, fmt=".2f",
-                annot_kws={"size": 6})
-    ax.set_title("PAGA connectivities (cell type)")
-    fig.tight_layout()
-    safe_savefig(fig, paga_dir / "paga_transitions_heatmap.png")
-
-    # UMAP coloured by PAGA pos (initialise UMAP from PAGA)
-    sc.pl.paga(adata, show=False)  # needed to init adata.uns['paga']['pos']
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        sc.tl.umap(adata, init_pos="paga", random_state=seed)
-
-    fig, ax = plt.subplots(figsize=(7, 6))
-    sc.pl.umap(adata, color=celltype_key, ax=ax, show=False, frameon=False,
-               legend_fontsize=6, size=8, title="UMAP (PAGA-initialised)")
-    fig.tight_layout()
-    safe_savefig(fig, paga_dir / "umap_paga_init.png")
-
-    print(f"    PAGA done. Connectivities → {table_dir}/trajectory_paga_connectivities.csv")
-
-    # Edge diagnostics — audit suspicious edges offline (no workstation needed)
-    write_paga_edge_diagnostics(adata, celltype_key, conn, table_dir)
-
-    return adata   # UMAP coords updated
-
-
-# Ambient / contamination markers whose presence on an edge suggests the
-# connection is driven by soup, not biology (project doc: snRNA ambient is severe).
+# Ambient / contamination markers whose dominance on a PAGA edge suggests the
+# connection is soup-driven, not biology (snRNA ambient is severe — project doc).
 AMBIENT_MARKERS = {
     "brain":    ["Malat1", "Meg3", "mt-Co1", "mt-Co3", "mt-Atp6", "mt-Nd1",
                  "Hbb-bs", "Hba-a1", "Hbb-bt", "Hba-a2"],
@@ -278,61 +106,170 @@ AMBIENT_MARKERS = {
                  "Psg17", "Psg18", "mt-Co1", "Malat1"],
 }
 
+# Immune microglia "states" are not a clean differentiation lineage — DPT there
+# is a state/activation axis, flagged so it is read accordingly.
+STATE_AXIS_LINEAGES = {"immune"}
 
-def write_paga_edge_diagnostics(adata, celltype_key, conn, table_dir,
-                                 min_connectivity=0.1, n_shared=15):
-    """One row per cell-type pair edge above min_connectivity, with the info
-    needed to judge offline whether the edge is biology or artifact:
 
-      - connectivity                  : PAGA edge weight
-      - n_cells_A / n_cells_B         : cluster sizes (tiny clusters = noisy edges)
-      - doublet_rate_A / _B           : high doublet rate → edge may be doublets
-      - top_shared_genes              : genes highly expressed in BOTH endpoints
-      - ambient_driven                : True if shared genes are mostly ambient markers
-      - n_ambient_in_shared           : how many shared genes are ambient
-      - mean_pct_mt_A / _B            : high %mt → contamination
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
 
-    Audit recipe (offline): for a surprising edge, check ambient_driven first,
-    then doublet_rate, then whether top_shared_genes are real lineage markers.
+def safe_savefig(fig, path, dpi=150):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def slugify(s):
+    return str(s).replace(" ", "_").replace("/", "_").replace(".", "p")
+
+
+def classify_group(g):
+    """Map a raw group label to canonical {Relaxed, Early, Late} or None."""
+    gl = str(g).lower()
+    if "relax" in gl:
+        return "Relaxed"
+    if "early" in gl:
+        return "Early"
+    if "late" in gl:
+        return "Late"
+    return None
+
+
+def symbol_to_var(adata):
+    """Return dict mapping gene symbol -> var_name, for marker lookup.
+
+    var_names may be Ensembl IDs; var['symbol'] (if present) holds the symbol.
+    Falls back to identity when var_names are already symbols.
     """
-    tissue = adata.uns.get("tissue", "brain")
-    ambient = set(AMBIENT_MARKERS.get(tissue, []))
-
-    # Map var_names → symbols if available (edges report human-readable genes)
-    symbol_map = None
     for c in ("symbol", "gene_symbol", "Symbol"):
         if c in adata.var.columns:
-            symbol_map = dict(zip(adata.var_names.astype(str), adata.var[c].astype(str)))
-            break
+            d = {}
+            for vn, sym in zip(adata.var_names.astype(str), adata.var[c].astype(str)):
+                if sym and sym != "nan" and sym not in d:
+                    d[sym] = vn
+            # also allow direct var_name hits
+            for vn in adata.var_names.astype(str):
+                d.setdefault(vn, vn)
+            return d
+    return {vn: vn for vn in adata.var_names.astype(str)}
 
-    cats = list(conn.index)
-    labels = adata.obs[celltype_key].astype(str)
 
-    # Per-cluster mean expression (lognorm) for shared-gene detection
+def drop_noncelltypes(adata, label_col):
+    """Drop Contamination_* and unassigned* from a subcluster/lineage object."""
+    labels = adata.obs[label_col].astype(str)
+    keep = ~(labels.str.startswith("Contamination_")
+             | labels.str.lower().eq("unresolved")
+             | labels.str.lower().str.startswith("unassigned"))
+    n_drop = int((~keep).sum())
+    if n_drop:
+        print(f"    Dropped {n_drop:,} contaminant/unassigned cells "
+              f"({sorted(labels[~keep].unique())})")
+    return adata[keep.values].copy()
+
+
+# ---------------------------------------------------------------------------
+# PAGA
+# ---------------------------------------------------------------------------
+
+def run_paga(adata, label_col, plot_dir, table_dir, prefix, seed,
+             draw_group_age=True):
+    """PAGA on the current neighbors graph, grouped by `label_col`.
+
+    Writes connectivities CSV, cell-type PAGA, optional per-age group/pool PAGA,
+    connectivity heatmap, edge diagnostics. Returns nothing (no X_umap clobber).
+    """
+    paga_dir = plot_dir / "paga"
+    paga_dir.mkdir(parents=True, exist_ok=True)
+
+    adata.obs[label_col] = adata.obs[label_col].astype("category")
+    sc.tl.paga(adata, groups=label_col)
+
+    conn_raw = adata.uns["paga"]["connectivities"]
+    conn = pd.DataFrame(
+        conn_raw.toarray() if sp.issparse(conn_raw) else np.asarray(conn_raw),
+        index=adata.obs[label_col].cat.categories,
+        columns=adata.obs[label_col].cat.categories,
+    )
+    conn.to_csv(table_dir / f"{prefix}_paga_connectivities.csv")
+
+    # PAGA coloured by cell type. sc.pl.paga needs uns['paga']['pos']; compute it.
+    sc.pl.paga(adata, show=False)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    sc.pl.paga(adata, color=label_col, ax=ax, show=False,
+               title=f"PAGA — {label_col} connectivity",
+               node_size_scale=1.5, edge_width_scale=1.0, fontsize=7, frameon=False)
+    safe_savefig(fig, paga_dir / "paga_by_celltype.png")
+
+    # Per-age PAGA coloured by group / pool (recompute on each age slice).
+    if draw_group_age and "age" in adata.obs.columns:
+        for age in sorted(adata.obs["age"].unique()):
+            sub = adata[adata.obs["age"] == age].copy()
+            if sub.n_obs < 50:
+                continue
+            sub.obs[label_col] = sub.obs[label_col].astype("category")
+            try:
+                sc.tl.paga(sub, groups=label_col)
+                sc.pl.paga(sub, show=False)
+                for ck in ("group", "pool"):
+                    if ck not in sub.obs.columns:
+                        continue
+                    fig, ax = plt.subplots(figsize=(7, 6))
+                    sc.pl.paga(sub, color=ck, ax=ax, show=False, frameon=False,
+                               title=f"PAGA age={age}, by {ck}",
+                               node_size_scale=1.2, fontsize=7)
+                    safe_savefig(fig, paga_dir / f"paga_by_{ck}_age{slugify(age)}.png")
+            except Exception as e:
+                print(f"    [warn] per-age PAGA age={age}: {e}")
+        # restore full-object paga for any downstream use
+        adata.obs[label_col] = adata.obs[label_col].astype("category")
+        sc.tl.paga(adata, groups=label_col)
+
+    # Connectivity heatmap
+    import seaborn as sns
+    fig, ax = plt.subplots(figsize=(max(6, 0.5 * len(conn)), max(5, 0.4 * len(conn))))
+    sns.heatmap(conn, ax=ax, cmap="Blues", vmin=0, vmax=1, linewidths=0.3,
+                annot=len(conn) <= 15, fmt=".2f", annot_kws={"size": 6})
+    ax.set_title(f"PAGA connectivities ({label_col})")
+    safe_savefig(fig, paga_dir / "paga_transitions_heatmap.png")
+
+    write_paga_edge_diagnostics(adata, label_col, conn, table_dir, prefix)
+    print(f"    PAGA done -> {table_dir}/{prefix}_paga_connectivities.csv")
+
+
+def write_paga_edge_diagnostics(adata, label_col, conn, table_dir, prefix,
+                                min_connectivity=0.1, n_shared=15):
+    """One row per cell-type edge above min_connectivity with offline-audit info:
+    connectivity, cluster sizes, doublet rate, %mt, top shared genes, and an
+    ambient_driven flag (>=1/3 of shared top genes are ambient markers)."""
+    tissue = adata.uns.get("tissue", "brain")
+    ambient = set(AMBIENT_MARKERS.get(tissue, []))
+    sym = symbol_to_var(adata)
+    var_to_sym = {v: k for k, v in sym.items()}  # var_name -> symbol (best effort)
+
     if "lognorm" not in adata.layers:
         add_lognorm(adata)
-    import scipy.sparse as _sp
     L = adata.layers["lognorm"]
-    L = L.toarray() if _sp.issparse(L) else np.asarray(L)
+    L = L.toarray() if sp.issparse(L) else np.asarray(L)
+    labels = adata.obs[label_col].astype(str)
+    var_names = adata.var_names.astype(str).values
 
-    # Precompute per-cluster mean expression + QC summaries
     cl_mean, cl_meta = {}, {}
-    for c in cats:
+    for c in conn.index:
         m = (labels == c).values
         if m.sum() == 0:
             continue
         cl_mean[c] = L[m].mean(axis=0)
         meta = {"n_cells": int(m.sum())}
-        if "doublet_class" in adata.obs.columns:
-            meta["doublet_rate"] = float(
-                (adata.obs.loc[m, "doublet_class"].astype(str) == "doublet").mean())
-        else:
-            meta["doublet_rate"] = np.nan
+        meta["doublet_rate"] = (
+            float((adata.obs.loc[m, "doublet_class"].astype(str) == "doublet").mean())
+            if "doublet_class" in adata.obs.columns else np.nan)
         meta["mean_pct_mt"] = (float(adata.obs.loc[m, "pct_counts_mt"].mean())
                                if "pct_counts_mt" in adata.obs.columns else np.nan)
         cl_meta[c] = meta
 
-    var_names = adata.var_names.astype(str).values
+    cats = list(conn.index)
     rows = []
     for i, a in enumerate(cats):
         for j, b in enumerate(cats):
@@ -341,197 +278,373 @@ def write_paga_edge_diagnostics(adata, celltype_key, conn, table_dir,
             w = float(conn.iloc[i, j])
             if w < min_connectivity or a not in cl_mean or b not in cl_mean:
                 continue
-            # Shared signal: genes high in both endpoints (min of the two means)
-            shared_score = np.minimum(cl_mean[a], cl_mean[b])
-            top_idx = np.argsort(shared_score)[::-1][:n_shared]
-            top_genes_raw = var_names[top_idx]
-            top_genes = [symbol_map.get(g, g) if symbol_map else g for g in top_genes_raw]
+            shared = np.minimum(cl_mean[a], cl_mean[b])
+            top_idx = np.argsort(shared)[::-1][:n_shared]
+            top_genes = [var_to_sym.get(g, g) for g in var_names[top_idx]]
             n_amb = sum(1 for g in top_genes if g in ambient)
             rows.append({
-                "celltype_A": a, "celltype_B": b,
-                "connectivity": round(w, 4),
+                "celltype_A": a, "celltype_B": b, "connectivity": round(w, 4),
                 "n_cells_A": cl_meta[a]["n_cells"], "n_cells_B": cl_meta[b]["n_cells"],
-                "doublet_rate_A": round(cl_meta[a]["doublet_rate"], 4)
-                                  if not np.isnan(cl_meta[a]["doublet_rate"]) else np.nan,
-                "doublet_rate_B": round(cl_meta[b]["doublet_rate"], 4)
-                                  if not np.isnan(cl_meta[b]["doublet_rate"]) else np.nan,
-                "mean_pct_mt_A": round(cl_meta[a]["mean_pct_mt"], 3)
-                                 if not np.isnan(cl_meta[a]["mean_pct_mt"]) else np.nan,
-                "mean_pct_mt_B": round(cl_meta[b]["mean_pct_mt"], 3)
-                                 if not np.isnan(cl_meta[b]["mean_pct_mt"]) else np.nan,
+                "doublet_rate_A": _r(cl_meta[a]["doublet_rate"]),
+                "doublet_rate_B": _r(cl_meta[b]["doublet_rate"]),
+                "mean_pct_mt_A": _r(cl_meta[a]["mean_pct_mt"], 3),
+                "mean_pct_mt_B": _r(cl_meta[b]["mean_pct_mt"], 3),
                 "n_ambient_in_shared": n_amb,
-                "ambient_driven": n_amb >= (n_shared // 3),   # ≥1/3 shared are ambient
+                "ambient_driven": n_amb >= (n_shared // 3),
                 "top_shared_genes": ", ".join(top_genes),
             })
-
     if rows:
         df = (pd.DataFrame(rows).sort_values("connectivity", ascending=False)
               .reset_index(drop=True))
-        out = table_dir / "08d_trajectory_paga_edge_diagnostics.csv"
-        df.to_csv(out, index=False)
-        n_amb = int(df["ambient_driven"].sum())
-        print(f"    Edge diagnostics → {out} ({len(df)} edges, {n_amb} ambient-driven)")
+        df.to_csv(table_dir / f"{prefix}_paga_edge_diagnostics.csv", index=False)
+        print(f"    Edge diagnostics -> {prefix}_paga_edge_diagnostics.csv "
+              f"({len(df)} edges, {int(df['ambient_driven'].sum())} ambient-driven)")
     else:
-        print(f"    [info] No edges above connectivity {min_connectivity} to diagnose.")
+        print(f"    [info] no edges above connectivity {min_connectivity}")
+
+
+def _r(x, nd=4):
+    return round(x, nd) if (x is not None and not (isinstance(x, float) and np.isnan(x))) else np.nan
 
 
 # ---------------------------------------------------------------------------
-# 2. Diffusion pseudotime
+# DPT on one lineage subset (axis computed once on all cells in the subset)
 # ---------------------------------------------------------------------------
 
-def run_dpt(adata, celltype_key, root_name, plot_dir, table_dir):
-    """Diffusion map + DPT anchored at root_name.
+def compute_dpt(lin, label_col, root_label, seed, order=None):
+    """Recompute neighbors+diffmap on lin's own X_scVI, root DPT at the cell
+    closest to root_label's centroid. Writes lin.obs['dpt_pseudotime'] in place.
 
-    DPT orders cells along a transcriptional continuum from the progenitor root.
-    The question for this study is whether prenatal stress alters that ordering
-    within a cell-type lineage — a valid question at every age (whether the
-    tissue is actively differentiating or in steady state, the lineage axis
-    still exists and stress can shift cells along it).
+    Orientation guard: if `order` is given and the root cell type's mean
+    pseudotime exceeds the terminal type's, the axis is inverted -> flip it so
+    pseudotime increases root->terminal. Returns (root_obs_name, flipped) or
+    (None, False) if the root label is absent."""
+    sc.pp.neighbors(lin, use_rep="X_scVI", random_state=seed)
+    sc.tl.diffmap(lin)
+    labels = lin.obs[label_col].astype(str)
+    mask = labels.str.contains(root_label, case=False, regex=False).values
+    if mask.sum() == 0:
+        print(f"    [warn] root label '{root_label}' not found in lineage; "
+              f"DPT skipped for this root")
+        return None, False
+    sub = lin[mask]
+    centroid = sub.obsm["X_scVI"].mean(axis=0)
+    dists = np.linalg.norm(sub.obsm["X_scVI"] - centroid, axis=1)
+    root_name = sub.obs_names[int(np.argmin(dists))]
+    lin.uns["iroot"] = lin.obs_names.get_loc(root_name)
+    sc.tl.dpt(lin)
 
-    All ages are treated identically. The per-lineage group comparison
-    (Kruskal-Wallis + η²) is run twice:
-      - pooled across all ages (group_level = "all_ages")
-      - split by age (group_level = each age value)
-    so every age that has the lineage gets its own row. No age is excluded.
+    flipped = False
+    if order and len(order) >= 2:
+        means = lin.obs.groupby(label_col, observed=True)["dpt_pseudotime"].mean()
+        root_ct, term_ct = order[0], order[-1]
+        if root_ct in means.index and term_ct in means.index:
+            if means[root_ct] > means[term_ct]:
+                pt = lin.obs["dpt_pseudotime"].values
+                lin.obs["dpt_pseudotime"] = float(np.nanmax(pt)) - pt
+                flipped = True
+                print(f"    [orient] flipped pseudotime: '{root_ct}' had higher "
+                      f"DPT than '{term_ct}' (axis was inverted)")
+    return root_name, flipped
 
-    Caveat tags carried in the output (informative, not gating):
-      - small_n note when total cells < 50
-      - pool_age_confound note (project doc §2): age co-varies with pool;
-        any age-split result inherits that confound.
 
-    Produces: dpt_umap.png, dpt_violin_by_celltype.png,
-              dpt_violin_by_group_{lineage}.png (pooled across ages),
-              dpt_group_comparison.png, trajectory_dpt_group_comparison.csv
-    """
-    print("\n  [DPT] Computing diffusion map + pseudotime...")
-    dpt_dir = plot_dir / "pseudotime"
-    dpt_dir.mkdir(parents=True, exist_ok=True)
+def plot_dpt_axis(lin, label_col, markers, sym, plot_dir, root_label, tissue, age_tag):
+    """UMAP coloured by pseudotime + cell type, per-celltype violin, and
+    marker-vs-pseudotime trends. Uses the lineage's existing X_umap.
+    Path includes age_tag so within-age slices don't overwrite each other."""
+    pt_dir = plot_dir / "pseudotime" / slugify(age_tag) / slugify(root_label)
+    pt_dir.mkdir(parents=True, exist_ok=True)
 
-    tissue = adata.uns.get("tissue", "brain")
-    ages_in_data = (sorted(adata.obs["age"].unique())
-                    if "age" in adata.obs.columns else [])
-    print(f"    Ages present (all treated identically): {ages_in_data or '(no age column)'}")
+    if "X_umap" in lin.obsm:
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        sc.pl.umap(lin, color="dpt_pseudotime", ax=axes[0], show=False, frameon=False,
+                   color_map="viridis", size=10, title=f"DPT (root={root_label})")
+        sc.pl.umap(lin, color=label_col, ax=axes[1], show=False, frameon=False,
+                   legend_fontsize=6, size=10, title="Subtypes")
+        safe_savefig(fig, pt_dir / "dpt_umap.png")
 
-    # Diffusion map on scVI neighbors
-    sc.tl.diffmap(adata)
-
-    # Set root
-    root_idx = adata.obs_names.get_loc(root_name)
-    adata.uns["iroot"] = root_idx
-    sc.tl.dpt(adata)
-
-    # UMAP coloured by DPT
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    sc.pl.umap(adata, color="dpt_pseudotime", ax=axes[0], show=False,
-               frameon=False, color_map="viridis", size=8,
-               title="Diffusion pseudotime")
-    sc.pl.umap(adata, color=celltype_key, ax=axes[1], show=False,
-               frameon=False, legend_fontsize=6, size=8, title="Cell types")
-    fig.tight_layout()
-    safe_savefig(fig, dpt_dir / "dpt_umap.png")
-
-    # Violin: DPT per cell type (all cells)
-    order = (adata.obs.groupby(celltype_key, observed=True)["dpt_pseudotime"]
+    # Per-celltype violin, ordered by median pseudotime
+    order = (lin.obs.groupby(label_col, observed=True)["dpt_pseudotime"]
              .median().sort_values().index.tolist())
-    adata.obs[celltype_key] = pd.Categorical(adata.obs[celltype_key], categories=order)
-    fig, ax = plt.subplots(figsize=(max(8, 0.6 * adata.obs[celltype_key].nunique()), 5))
-    sc.pl.violin(adata, keys="dpt_pseudotime", groupby=celltype_key,
-                 ax=ax, show=False, rotation=45)
-    ax.set_title("Pseudotime distribution per cell type (all ages)")
-    fig.tight_layout()
-    safe_savefig(fig, dpt_dir / "dpt_violin_by_celltype.png")
+    lin.obs["_ct_ord"] = pd.Categorical(lin.obs[label_col].astype(str), categories=order)
+    fig, ax = plt.subplots(figsize=(max(6, 0.8 * len(order)), 4.5))
+    sc.pl.violin(lin, keys="dpt_pseudotime", groupby="_ct_ord", ax=ax, show=False,
+                 rotation=45)
+    ax.set_title(f"Pseudotime by subtype (root={root_label})")
+    safe_savefig(fig, pt_dir / "dpt_violin_by_subtype.png")
+    del lin.obs["_ct_ord"]
 
-    # Per focal lineage: Kruskal-Wallis across groups, both pooled and per-age.
-    lineages = FOCAL_LINEAGES.get(tissue, {})
+    # Marker trends: lognorm vs pseudotime, binned mean. Warn-skip missing markers.
+    if "lognorm" not in lin.layers:
+        add_lognorm(lin)
+    present, missing = [], []
+    for mk in (markers or []):
+        vn = sym.get(mk)
+        (present.append((mk, vn)) if vn in set(lin.var_names.astype(str)) else missing.append(mk))
+    if missing:
+        print(f"    [warn] markers not in panel (skipped): {missing}")
+    if present:
+        L = lin.layers["lognorm"]
+        pt = lin.obs["dpt_pseudotime"].values
+        order_idx = np.argsort(pt)
+        nbin = 20
+        bins = np.linspace(pt.min(), pt.max(), nbin + 1)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        which = np.clip(np.digitize(pt, bins) - 1, 0, nbin - 1)
+        fig, ax = plt.subplots(figsize=(6.5, 4.5))
+        for mk, vn in present:
+            col = list(lin.var_names.astype(str)).index(vn)
+            vals = L[:, col]
+            vals = vals.toarray().ravel() if sp.issparse(vals) else np.asarray(vals).ravel()
+            means = [vals[which == b].mean() if (which == b).any() else np.nan
+                     for b in range(nbin)]
+            ax.plot(centers, means, marker="o", ms=3, lw=1.4, label=mk)
+        ax.set_xlabel("DPT pseudotime"); ax.set_ylabel("mean lognorm expr")
+        ax.set_title(f"Marker trends along pseudotime (root={root_label})")
+        ax.legend(fontsize=7, ncol=2)
+        safe_savefig(fig, pt_dir / "dpt_marker_trends.png")
+
+
+# ---------------------------------------------------------------------------
+# Per-donor summary + group comparison
+# ---------------------------------------------------------------------------
+
+def donor_summary(obs, mature_threshold):
+    """Per-donor median pseudotime + mature fraction over the cells in `obs`."""
     rows = []
-
-    def kw_for(sub, lineage_name, group_level, age_confound):
-        """Run KW + η² on one (lineage, age-slice) subset, append a row."""
-        if "group" not in sub.obs.columns or sub.obs["group"].nunique() < 2:
-            return
-        groups = sorted(sub.obs["group"].unique())
-        data = [sub.obs.loc[sub.obs["group"] == g, "dpt_pseudotime"].dropna().values
-                for g in groups]
-        if len(data) < 2 or not all(len(d) > 0 for d in data):
-            return
-        try:
-            stat, pval = stats.kruskal(*data)
-            k = len(groups)
-            n = sum(len(d) for d in data)
-            eta2 = max(0.0, (stat - k + 1) / (n - k)) if n > k else np.nan
-        except Exception as e:
-            print(f"    [warn] KW {lineage_name} / {group_level}: {e}")
-            return
-        notes = []
-        if n < 50:
-            notes.append("small_n — report η², not just p-value")
-        if age_confound:
-            notes.append("pool_age_confound (§2): age co-varies with pool")
-        rows.append({
-            "lineage": lineage_name,
-            "group_level": group_level,
-            "n_cells": int(sum(len(d) for d in data)),
-            "groups": str(groups),
-            "kruskal_stat": round(stat, 4),
-            "kruskal_pval": round(pval, 6),
-            "eta2_effect_size": round(eta2, 4),
-            "note": "; ".join(notes),
-        })
-
-    for lineage_name, fragments in lineages.items():
-        mask = cells_in_lineage(adata, celltype_key, fragments)
-        if mask.sum() < 20:
+    for donor, d in obs.groupby("donor_id", observed=True):
+        pt = d["dpt_pseudotime"].dropna().values
+        if len(pt) == 0:
             continue
-        lin = adata[mask]
+        g = classify_group(d["group"].iloc[0])
+        rows.append({
+            "donor_id": donor,
+            "group": g,
+            "raw_group": str(d["group"].iloc[0]),
+            "age": str(d["age"].iloc[0]) if "age" in d else "NA",
+            "sex": str(d["sex"].iloc[0]) if "sex" in d else "NA",
+            "n_cells": int(len(pt)),
+            "median_pseudotime": float(np.median(pt)),
+            "mature_fraction": float((pt > mature_threshold).mean()),
+        })
+    return pd.DataFrame(rows)
 
-        # Pooled across all ages
-        kw_for(lin, lineage_name, "all_ages", age_confound=False)
 
-        # Per age (no age dropped) — carries pool-age confound caveat
-        if "age" in lin.obs.columns:
-            for age in sorted(lin.obs["age"].unique()):
-                age_sub = lin[lin.obs["age"] == age]
-                if age_sub.n_obs < 20:
+def compare_groups(summ, contrasts, sex_label, group_level, min_donors,
+                   reliable_donors, base_note):
+    """Run MW-U pairwise (per contrast) + KW omnibus on donor scalars.
+
+    `summ` is a donor-summary frame already filtered to the relevant slice
+    (sex stratum, age). Returns a list of result rows."""
+    out = []
+    metrics = ["median_pseudotime", "mature_fraction"]
+    present_groups = [g for g in ("Relaxed", "Early", "Late")
+                      if (summ["group"] == g).sum() > 0]
+
+    # Pairwise MW-U
+    for cname, (a, b) in contrasts.items():   # a=test, b=reference
+        ga = summ.loc[summ["group"] == a]
+        gb = summ.loc[summ["group"] == b]
+        na, nb = len(ga), len(gb)
+        if na < min_donors or nb < min_donors:
+            continue
+        rel = "ok" if (na >= reliable_donors and nb >= reliable_donors) else "low_n"
+        for metric in metrics:
+            x, y = ga[metric].values, gb[metric].values
+            try:
+                U, p = stats.mannwhitneyu(x, y, alternative="two-sided")
+                rbc = 1.0 - 2.0 * U / (na * nb)   # rank-biserial
+            except Exception as e:
+                U, p, rbc = np.nan, np.nan, np.nan
+                print(f"    [warn] MW-U {cname}/{metric}: {e}")
+            out.append({
+                "sex_stratum": sex_label, "group_level": group_level,
+                "contrast": cname, "test": "mann_whitney_u", "metric": metric,
+                "n_test": na, "n_ref": nb,
+                "median_test": _r(float(np.median(x)), 4),
+                "median_ref": _r(float(np.median(y)), 4),
+                "statistic": _r(float(U), 3), "pvalue": _r(float(p), 6),
+                "effect_size": _r(float(rbc), 4), "effect_type": "rank_biserial",
+                "reliability": rel, "note": base_note,
+            })
+
+    # KW omnibus (>=3 groups)
+    if len(present_groups) >= 3:
+        sizes = {g: (summ["group"] == g).sum() for g in present_groups}
+        if all(n >= min_donors for n in sizes.values()):
+            rel = "ok" if all(n >= reliable_donors for n in sizes.values()) else "low_n"
+            for metric in metrics:
+                data = [summ.loc[summ["group"] == g, metric].values
+                        for g in present_groups]
+                try:
+                    H, p = stats.kruskal(*data)
+                    k = len(present_groups); n = sum(len(d) for d in data)
+                    eta2 = max(0.0, (H - k + 1) / (n - k)) if n > k else np.nan
+                except Exception as e:
+                    H, p, eta2 = np.nan, np.nan, np.nan
+                    print(f"    [warn] KW {metric}: {e}")
+                out.append({
+                    "sex_stratum": sex_label, "group_level": group_level,
+                    "contrast": "omnibus_3group", "test": "kruskal_wallis",
+                    "metric": metric, "n_test": int(sum(sizes.values())), "n_ref": np.nan,
+                    "median_test": np.nan, "median_ref": np.nan,
+                    "statistic": _r(float(H), 3), "pvalue": _r(float(p), 6),
+                    "effect_size": _r(float(eta2), 4), "effect_type": "eta2",
+                    "reliability": rel, "note": base_note,
+                })
+    return out
+
+
+def plot_per_donor(summ, contrasts, sex_label, plot_dir, root_label, group_level):
+    """Donor-level scatter/box: each donor a point, x=group, two panels
+    (median pseudotime, mature fraction)."""
+    pd_dir = plot_dir / "per_donor" / sex_label
+    pd_dir.mkdir(parents=True, exist_ok=True)
+    order = [g for g in ("Relaxed", "Early", "Late") if (summ["group"] == g).any()]
+    if not order:
+        return
+    color = {"Relaxed": "gray", "Early": "tab:red", "Late": "tab:blue"}
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
+    for ax, metric, title in zip(
+            axes, ["median_pseudotime", "mature_fraction"],
+            ["Median pseudotime / donor", "Mature fraction / donor"]):
+        for xi, g in enumerate(order):
+            vals = summ.loc[summ["group"] == g, metric].values
+            if len(vals):
+                ax.boxplot(vals, positions=[xi], widths=0.5,
+                           showfliers=False, patch_artist=False)
+                jit = (np.random.RandomState(0).rand(len(vals)) - 0.5) * 0.18
+                ax.scatter(np.full(len(vals), xi) + jit, vals, s=36,
+                           color=color[g], edgecolor="k", lw=0.4, zorder=3)
+        ax.set_xticks(range(len(order))); ax.set_xticklabels(order)
+        ax.set_title(title); ax.set_ylabel(metric)
+    fig.suptitle(f"{root_label} — per-donor ({group_level}, sex={sex_label})")
+    fig.tight_layout()
+    safe_savefig(fig, pd_dir / f"per_donor_{slugify(group_level)}_root_{slugify(root_label)}.png")
+
+
+# ---------------------------------------------------------------------------
+# Lineage driver
+# ---------------------------------------------------------------------------
+
+def contrasts_for_groups(present):
+    """Available pairwise contrasts given the groups present (canonical labels)."""
+    c = {}
+    if "Early" in present and "Relaxed" in present:
+        c["early_vs_relaxed"] = ("Early", "Relaxed")
+    if "Late" in present and "Relaxed" in present:
+        c["late_vs_relaxed"] = ("Late", "Relaxed")
+    if "Early" in present and "Late" in present:
+        c["early_vs_late"] = ("Early", "Late")
+    return c
+
+
+def run_lineage(lin, label_col, lin_name, lin_cfg, plot_dir, table_dir, prefix,
+                cfg, seed, within_age):
+    """Full Mode-B analysis for one lineage object (already cleaned)."""
+    tissue = lin.uns.get("tissue", cfg["tissue"])
+    add_lognorm(lin)
+    sym = symbol_to_var(lin)
+    roots = lin_cfg["root"]
+    roots = roots if isinstance(roots, list) else [roots]
+    markers = lin_cfg.get("markers", [])
+    order = lin_cfg.get("order", [])
+    mature_q = float(cfg["trajectory"].get("mature_quantile", 0.66))
+    min_donors = int(cfg["trajectory"].get("min_donors", 2))
+    reliable = int(cfg["trajectory"].get("reliable_donors", 3))
+    strata = iter_strata(cfg, "sex")
+    state_axis = lin_name in STATE_AXIS_LINEAGES
+
+    # Lineage PAGA (subtype connectivity) — recompute neighbors first.
+    sc.pp.neighbors(lin, use_rep="X_scVI", random_state=seed)
+    run_paga(lin, label_col, plot_dir, table_dir, prefix, seed,
+             draw_group_age=not within_age)
+
+    # Determine the age-slices to compute DPT on.
+    if within_age:
+        age_slices = [(a, lin[lin.obs["age"] == a].copy())
+                      for a in sorted(lin.obs["age"].unique())
+                      if (lin.obs["age"] == a).sum() >= 20]
+    else:
+        age_slices = [("all_ages", lin)]   # single cross-age axis
+
+    donor_rows, cmp_rows = [], []
+    for age_tag, sub in age_slices:
+        if within_age:
+            print(f"  [age={age_tag}] {sub.n_obs:,} cells")
+        for root_label in roots:
+            root_name, flipped = compute_dpt(sub, label_col, root_label, seed, order=order)
+            if root_name is None:
+                continue
+            print(f"    DPT root='{root_label}' -> {root_name}"
+                  f"{' [flipped]' if flipped else ''}")
+            thr = float(np.quantile(sub.obs["dpt_pseudotime"].dropna(), mature_q))
+
+            plot_dpt_axis(sub, label_col, markers, sym, plot_dir, root_label, tissue, age_tag)
+
+            summ = donor_summary(sub.obs, thr)
+            summ["lineage"] = lin_name
+            summ["root"] = root_label
+            summ["age_slice"] = age_tag
+            summ["mature_threshold"] = round(thr, 4)
+            donor_rows.append(summ)
+
+            # base note assembly
+            note_bits = []
+            if flipped:
+                note_bits.append("pseudotime_axis_flipped_to_root_terminal")
+            if state_axis:
+                note_bits.append("state_axis_not_lineage")
+            if lin_name == "trophoblast":
+                note_bits.append("trophoblast_branched_DPT_labyrinth_arm")
+
+            for sex_label, sex_val in strata:
+                s = summ if sex_val is None else summ[summ["sex"] == sex_val]
+                if len(s) == 0:
                     continue
-                kw_for(age_sub, lineage_name, f"age={age}", age_confound=True)
+                sex_note = note_bits + ([] if sex_label == "combined" else ["sex_stratum_low_n"])
 
-        # Violin: pooled across ages, by group
-        if "group" in lin.obs.columns and lin.obs["group"].nunique() >= 2:
-            groups = sorted(lin.obs["group"].unique())
-            data = [lin.obs.loc[lin.obs["group"] == g, "dpt_pseudotime"].dropna().values
-                    for g in groups]
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.violinplot(data, showmedians=True)
-            ax.set_xticks(range(1, len(groups) + 1))
-            ax.set_xticklabels(groups, rotation=30, ha="right")
-            ax.set_ylabel("DPT pseudotime")
-            ax.set_title(f"{lineage_name} — pseudotime by group (all ages pooled)")
-            fig.tight_layout()
-            slug = lineage_name.replace(" ", "_").replace("/", "_")
-            safe_savefig(fig, dpt_dir / f"dpt_violin_by_group_{slug}.png")
+                if within_age:
+                    present = [g for g in ("Relaxed", "Early", "Late")
+                               if (s["group"] == g).any()]
+                    cons = contrasts_for_groups(present)
+                    cmp_rows += compare_groups(
+                        s, cons, sex_label, f"age={age_tag}", min_donors, reliable,
+                        "; ".join(sex_note))
+                else:
+                    # brain: per-age (clean) + all-ages pooled (pool_age_confound)
+                    for age in sorted(s["age"].unique()):
+                        sa = s[s["age"] == age]
+                        present = [g for g in ("Relaxed", "Early", "Late")
+                                   if (sa["group"] == g).any()]
+                        cons = contrasts_for_groups(present)
+                        cmp_rows += compare_groups(
+                            sa, cons, sex_label, f"age={age}", min_donors, reliable,
+                            "; ".join(sex_note))
+                    present = [g for g in ("Relaxed", "Early", "Late")
+                               if (s["group"] == g).any()]
+                    cons = contrasts_for_groups(present)
+                    cmp_rows += compare_groups(
+                        s, cons, sex_label, "all_ages", min_donors, reliable,
+                        "; ".join(sex_note + ["pool_age_confound (§2): age co-varies with pool"]))
 
-    if rows:
-        kw_df = pd.DataFrame(rows)
-        kw_df.to_csv(table_dir / "08d_trajectory_dpt_group_comparison.csv", index=False)
-        print(f"    DPT group comparison: {len(rows)} rows "
-              f"({kw_df['lineage'].nunique()} lineages × age-levels)")
-        print(kw_df[["lineage", "group_level", "kruskal_pval",
-                      "eta2_effect_size"]].to_string(index=False))
+                # per-donor figure (combined per slice is enough; draw for each stratum)
+                plot_per_donor(s, None, sex_label, plot_dir, root_label,
+                               age_tag if within_age else "all_ages")
 
-        # Summary bar: all rows, labelled lineage + group_level
-        fig, ax = plt.subplots(figsize=(max(6, 0.5 * len(kw_df)), max(4, 0.4 * len(kw_df))))
-        colors = ["salmon" if p < 0.05 else "lightgray" for p in kw_df["kruskal_pval"]]
-        ax.barh(kw_df["lineage"] + " (" + kw_df["group_level"] + ")",
-                -np.log10(kw_df["kruskal_pval"].clip(lower=1e-10)),
-                color=colors)
-        ax.axvline(-np.log10(0.05), color="k", ls="--", lw=0.8)
-        ax.set_xlabel("-log10(p-value, Kruskal-Wallis)")
-        ax.set_title("DPT group comparison per focal lineage × age\n"
-                     "salmon = p<0.05 | check η² + note column for caveats")
-        fig.tight_layout()
-        safe_savefig(fig, dpt_dir / "dpt_group_comparison.png")
-
-    print(f"    DPT done. obs['dpt_pseudotime'] written for all cells.")
+    if donor_rows:
+        dsum = pd.concat(donor_rows, ignore_index=True)
+        dsum.to_csv(table_dir / f"{prefix}_dpt_per_donor_summary.csv", index=False)
+        print(f"  Per-donor summary: {len(dsum)} donor-rows -> "
+              f"{prefix}_dpt_per_donor_summary.csv")
+    if cmp_rows:
+        cdf = pd.DataFrame(cmp_rows)
+        cdf.to_csv(table_dir / f"{prefix}_dpt_group_comparison.csv", index=False)
+        print(f"  Group comparison: {len(cdf)} rows -> {prefix}_dpt_group_comparison.csv")
+        show = cdf[cdf["sex_stratum"] == "combined"]
+        if len(show):
+            print(show[["group_level", "contrast", "metric", "pvalue",
+                        "effect_size", "reliability"]].to_string(index=False))
 
 
 # ---------------------------------------------------------------------------
@@ -539,92 +652,99 @@ def run_dpt(adata, celltype_key, root_name, plot_dir, table_dir):
 # ---------------------------------------------------------------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="Phase 8d: trajectory analysis")
+    ap = argparse.ArgumentParser(description="Phase 8d: trajectory (PAGA + DPT)")
     ap.add_argument("--config", required=True, type=Path)
-    ap.add_argument("--celltype-key", default=None,
-                    help="obs column for cell type labels (auto-detected if omitted)")
-    ap.add_argument("--root-celltype", default=None,
-                    help="Cell type label fragment for DPT root (e.g. 'Radial glia / NPCs')")
+    ap.add_argument("--subcluster", default=None,
+                    help="focal lineage name (Mode B). Omit for whole-tissue PAGA (Mode A).")
     args = ap.parse_args()
 
-    print(f"\n=== Phase 8d: Trajectory analysis (PAGA + DPT) ===")
-    print(f"  RNA velocity: NOT run (10x Flex incompatible — kb.10xgenomics.com/25938615598477)")
-    print(f"  CellRank: NOT run (no velocity → ConnectivityKernel duplicates PAGA)")
+    print("\n=== Phase 8d: Trajectory (PAGA + DPT) ===")
+    print("  RNA velocity / CellRank: NOT run (10x Flex exon-only; no velocity).")
     cfg = load_config(args.config)
     tissue = cfg["tissue"]
-    seed   = int(cfg.get("random_seed", 42))
+    seed = int(cfg.get("random_seed", 42))
+    if "trajectory" not in cfg:
+        sys.exit("ERROR: no 'trajectory:' block in config. Add it (see script docstring).")
+    tcfg = cfg["trajectory"]
+    within_age = bool(tcfg.get("within_age", False))
 
-    base = Path(cfg["results_dir"]) / "h5ad"
-    candidates = [base / "08b_label_transferred" / "all_samples.h5ad",
-                  base / "08_annotated" / "all_samples.h5ad"]
-    in_path = next((p for p in candidates if p.is_file()), None)
-    if in_path is None:
-        sys.exit("ERROR: no annotated input. Checked:\n  " +
-                 "\n  ".join(str(p) for p in candidates))
-    print(f"\n  Input:  {in_path}")
-    print(f"  Tissue: {tissue}")
+    results_dir = Path(cfg["results_dir"])
+    h5dir = results_dir / "h5ad"
 
-    plot_dir  = Path(cfg["results_dir"]) / "plots" / "08d_trajectory"
-    table_dir = phase_table_dir(cfg, "08d_trajectory")
-    plot_dir.mkdir(parents=True, exist_ok=True)
-    table_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"\n[1/2] Loading data...")
-    adata = sc.read_h5ad(in_path)
-    print(f"  {adata.n_obs:,} cells × {adata.n_vars:,} genes")
-
-    if "X_scVI" not in adata.obsm:
-        sys.exit("ERROR: 'X_scVI' not in obsm. Run Phase 5 first.")
-    if "X_umap" not in adata.obsm:
-        sys.exit("ERROR: 'X_umap' not in obsm. Run Phase 5 first.")
-
-    celltype_key = resolve_celltype_key(adata, args.celltype_key)
-    print(f"  Cell type column: '{celltype_key}' ({adata.obs[celltype_key].nunique()} types)")
-
-    adata.uns["tissue"] = tissue
-    add_lognorm(adata)
-
-    if "neighbors" not in adata.uns:
-        print("  Recomputing neighbors on X_scVI...")
+    # -----------------------------------------------------------------------
+    # Mode A — whole-tissue PAGA
+    # -----------------------------------------------------------------------
+    if args.subcluster is None:
+        in_path = h5dir / "08_annotated" / "all_samples.h5ad"
+        if not in_path.is_file():
+            sys.exit(f"ERROR: {in_path} not found (run Phase 7).")
+        print(f"\n[Mode A: whole-tissue PAGA]\n  Input: {in_path}")
+        adata = sc.read_h5ad(in_path)
+        adata.uns["tissue"] = tissue
+        key = tcfg.get("whole_paga_key",
+                       "celltypist_broad" if tissue == "brain" else "celltype_majority")
+        if key not in adata.obs.columns:
+            sys.exit(f"ERROR: whole_paga_key '{key}' not in obs.")
+        adata = drop_noncelltypes(adata, key)
+        print(f"  {adata.n_obs:,} cells | key='{key}' "
+              f"({adata.obs[key].nunique()} types)")
+        if "X_scVI" not in adata.obsm:
+            sys.exit("ERROR: X_scVI missing (run Phase 5).")
         sc.pp.neighbors(adata, use_rep="X_scVI", random_state=seed)
+        plot_dir = results_dir / "plots" / "08d_trajectory"
+        table_dir = phase_table_dir(cfg, "08d_trajectory")
+        run_paga(adata, key, plot_dir, table_dir, "08d_trajectory", seed,
+                 draw_group_age=True)
+        print(f"\n✓ Mode A done. Plots: {plot_dir}/paga/  (X_umap NOT modified)\n")
+        return
 
     # -----------------------------------------------------------------------
-    # 1. PAGA
+    # Mode B — focal lineage
     # -----------------------------------------------------------------------
-    print(f"\n[1/2] PAGA...")
-    adata = run_paga(adata, celltype_key, plot_dir, table_dir, seed)
+    lin_name = args.subcluster
+    lineages = tcfg.get("lineages", {})
+    if lin_name not in lineages:
+        sys.exit(f"ERROR: lineage '{lin_name}' not in trajectory.lineages "
+                 f"({sorted(lineages)}).")
+    lin_cfg = lineages[lin_name]
+    prefix = f"08d_trajectory_subcluster_{lin_name}"
+    plot_dir = results_dir / "plots" / prefix
+    table_dir = phase_table_dir(cfg, prefix)
+    print(f"\n[Mode B: lineage '{lin_name}']")
 
-    # -----------------------------------------------------------------------
-    # 2. Diffusion pseudotime (age-scoped)
-    # -----------------------------------------------------------------------
-    print(f"\n[2/2] Diffusion pseudotime...")
-    root_candidates = ([args.root_celltype] if args.root_celltype
-                       else DEFAULT_ROOT_CELLTYPES.get(tissue, []))
-    root_name, _ = find_root_cell(adata, celltype_key, root_candidates)
-    run_dpt(adata, celltype_key, root_name, plot_dir, table_dir)
+    if tissue == "brain":
+        in_path = h5dir / "08c_subclustered" / f"{lin_name}.h5ad"
+        if not in_path.is_file():
+            sys.exit(f"ERROR: {in_path} not found.")
+        lin = sc.read_h5ad(in_path)
+        label_col = "subcluster_name" if "subcluster_name" in lin.obs.columns else "subcluster"
+    else:
+        # placenta: subset the main object to the trophoblast cell-type list
+        in_path = h5dir / "08_annotated" / "all_samples.h5ad"
+        if not in_path.is_file():
+            sys.exit(f"ERROR: {in_path} not found (run Phase 7).")
+        cts = lin_cfg.get("celltypes")
+        if not cts:
+            sys.exit(f"ERROR: placenta lineage '{lin_name}' needs a 'celltypes' list.")
+        full = sc.read_h5ad(in_path)
+        label_col = "celltype_majority"
+        keep = full.obs[label_col].astype(str).isin(cts)
+        lin = full[keep.values].copy()
+        del full
+        print(f"  Subset to {sorted(cts)}: {lin.n_obs:,} cells")
 
-    # -----------------------------------------------------------------------
-    # Save
-    # -----------------------------------------------------------------------
-    if "lognorm" in adata.layers:
-        del adata.layers["lognorm"]
-    out_path = Path(cfg["results_dir"]) / "h5ad" / "08d_trajectory" / "all_samples.h5ad"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    adata.write_h5ad(out_path)
+    lin.uns["tissue"] = tissue
+    if "X_scVI" not in lin.obsm:
+        sys.exit("ERROR: X_scVI missing in lineage object (run Phase 5).")
+    lin = drop_noncelltypes(lin, label_col)
+    print(f"  {lin.n_obs:,} cells | label='{label_col}' "
+          f"({lin.obs[label_col].nunique()} subtypes) | within_age={within_age}")
 
-    print(f"\n  Written: {out_path}")
-    print(f"  Plots:   {plot_dir}")
-    print(f"\n✓ Phase 8d complete.")
-    print(f"\nKey outputs:")
-    print(f"  paga/paga_by_celltype.png          — cell type connectivity graph")
-    print(f"  paga/paga_transitions_heatmap.png  — connectivity matrix")
-    print(f"  pseudotime/dpt_umap.png            — pseudotime on UMAP")
-    print(f"  pseudotime/dpt_group_comparison.png — Kruskal-Wallis + η², per lineage×age")
-    print(f"  tables/trajectory_dpt_group_comparison.csv")
-    print(f"    → 'group_level' col: 'all_ages' (pooled) or 'age=<X>' (per age)")
-    print(f"    → 'note' col carries small_n + pool_age_confound caveats")
-    print(f"\nPool-age caveat (project doc §2): P1/4W/3mo dominated by different")
-    print(f"  pools. Age-split DPT rows inherit this confound (flagged in 'note').\n")
+    run_lineage(lin, label_col, lin_name, lin_cfg, plot_dir, table_dir, prefix,
+                cfg, seed, within_age)
+
+    print(f"\n✓ Mode B done ('{lin_name}'). Plots: {plot_dir}")
+    print(f"  Tables: {table_dir}/{prefix}_dpt_*.csv\n")
 
 
 if __name__ == "__main__":

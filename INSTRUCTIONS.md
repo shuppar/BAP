@@ -101,6 +101,7 @@ Several bugs came from writing external identifiers from memory and presenting t
   - `multi_class='ovr'` — removed in sklearn 1.7; CellTypist still hardcodes it (patched via sed; see §"CellTypist sklearn-1.7 patch").
   - `Cx3cr1` — NOT in the 10x Flex Mouse Transcriptome v2 panel; use P2ry12/Tmem119/Csf1r/Aif1 for microglia. (Also absent: Fam64a, Hmgb2, Hn1, Mlf1ip, Wdc.)
   - `datasplitter_kwargs` — correct scvi-tools 1.4.3 kwarg for num_workers/pin_memory (NOT data_loader_kwargs/dataloader_kwargs).
+  - **Contrast names are NOT uniform across tissues:** brain `*_per_age` (age lives in `group_level`), placenta `*_E12.5` / `*_E18.5` (age baked into the contrast name). Match by family prefix (`contrast_family` → EVR/LVR/EVL/WAA), NEVER exact string. Exact-match silently drops the whole placenta side (see §"Phase 8c summary plots").
 
 ## No silent failures
 Wrong-but-plausible output is worse than a crash, because it looks correct.
@@ -192,14 +193,14 @@ sed -i "s/multi_class = 'ovr', //;s/multi_class = 'ovr'//" \
 
 **Stage-specific:**
 - **Corrected p-values everywhere** — propeller FDR (8a), DESeq2 padj (8b), per-collection BH FDR (8c). No raw p-value drives any significance call.
-- **GSEA gene sets = mouse MSigDB via msigdbr** (MH+M2+M5+M8), exported once to refs/msigdb_mouse.tsv. NOT decoupler's get_resource(MSigDB,mouse) — it's broken. FDR corrected WITHIN each collection (sizes differ ~150x); pooled kept as reference.
+- **GSEA gene sets = mouse MSigDB via msigdbr** (MH+M2+M5+M8), exported once to refs/msigdb_mouse.tsv. NOT decoupler's get_resource(MSigDB,mouse) — it's broken. FDR corrected WITHIN each collection (sizes differ ~150x); pooled kept as reference. **Plots drop M8 (cell-identity sets) — see §"Phase 8c summary plots".**
 - **Multi-database plots = side-by-side panels**, one subplot per collection, figure width scaled to #collections. Use constrained_layout (NOT with bbox_inches='tight' — they fight and clip).
 - **--subcluster flag** on 8b/8c/8e runs on the 7b subcluster object (label col `subcluster_name` from 7d, else `subcluster` integer from 7b), writing `*_subcluster_{slug}` outputs to separate folders.
 - **Subcluster runs are a LOOP, not one cell type.** Production runs every focal cell type through 8b, 8c, and 8e via the same `CELL_TYPES` array defined once in run_pipeline*.sh.
 - **Subcluster naming (7d)**: 7b produces INTEGER subcluster ids; 7d names them via CellTypist majority_voting + literature-marker scoring from `config/subcluster_markers.yaml`, aggregated per cluster (mean score → argmax).
 - **TF activity (8c) = REQUIRED in production**: ULM on DE Wald stats vs CollecTRI mouse network, per contrast×celltype, BH-FDR within celltype×contrast. Always pass `--tf`. Gates 8f view 5 and 8g view 3; cannot be recovered without re-running 8c. Needs network (omnipath).
 - **8e cell-cell communication = LIANA+ in main env, no sidecar.** Three arms in one script: baseline `rank_aggregate` per group×age, differential via `li.multi.df_to_lr` reading 8b's Wald stats, per-donor for statistics. Covers all three group comparisons (ES-v-Rel, LS-v-Rel, ES-v-LS).
-- **8f cross-tissue = six views, all reproducible from 8b/8c CSVs.** Two biologically aligned arms (E12.5 placenta Early → P1/4W/3mo brain Early; E18.5 placenta Late → same; P1 Late carries `confounded_with_pool` flag). Views: DEG overlap (hypergeom), RRHO (custom NumPy), pathway concordance from 8c GSEA, LR cross-tissue mechanistic hypotheses (placental ligand × brain receptor from liana mouseconsensus with `stress_axis` flag column), TF concordance from 8c TF activity, ORA of overlap genes vs MSigDB. The LR table is the publication-quality output.
+- **8f cross-tissue = six views, all reproducible from 8b/8c CSVs.** Two biologically aligned arms (E12.5 placenta Early → P1/4W/3mo brain Early; E18.5 placenta Late → same; P1 Late carries `confounded_with_pool` flag). Views: DEG overlap (hypergeom), RRHO (custom NumPy), pathway concordance from 8c GSEA, LR cross-tissue mechanistic hypotheses (placental ligand × brain receptor from liana mouseconsensus with `stress_axis` flag column), TF concordance from 8c TF activity, ORA of overlap genes vs MSigDB. The LR table is the publication-quality output. **8f must use the shared `contrast_family` resolver (see §"Phase 8c summary plots") — placenta and brain name contrasts differently.**
 - **NO cross-tissue cell-cell communication.** BBB makes literal placenta-cell-to-brain-cell signalling implausible — 8f view 4 (LR from DE) is the correctly framed endocrine/paracrine version.
 - **8g cross-age persistence = brain only.** Placenta has incomplete cross-age factorial; 8g exits cleanly with `tissue: placenta`. Persistence classes: persistent, resolving_early, established_late, P1_only, transient_4W, emergent_3mo, P1_3mo_only, persistent_directionswap. Cross-arm core signature (view 6) = intersection of persistent calls in BOTH arms with consistent direction = paper-quality table.
 
@@ -236,6 +237,16 @@ Supporting evidence at the broad-cell-type level (sex=combined, level=whole, bra
 Supporting evidence at the subcluster level: PAM_ATM_Microglia (Δ_LOST=+147 ↑**), BAM (Δ=+92 ↑**), Homeostatic_Microglia (Δ=+9 ↑**), Protoplasmic_Astrocyte (Δ=+334 ↑**), OPC (Δ=+72 ↑*), MFOL (Δ=+17 ↑*).
 
 Methods caveat to include in paper: `within_group_across_age` is pool-confounded by design (each age uses different pools). The k-preserving shuffle test is partially robust to this — each gene's `k_i` is computed across the same pool structure, so the null preserves whatever pool-driven artifacts are present. The signal that exceeds this null is therefore biology beyond the pool structure.
+
+## Phase 8c summary plots (locked 2026-06-22)
+`08c_pathways_summary.py` plots from the 8c CSVs only (no recompute; mirrors the 8b/8b_summary split). Iterates per (sex × level × celltype); **ages are rows** inside each figure. Default `--sex-strata combined`; concordance/localization/trajectory matrices always use all sexes. Plot set per slice: 3 solo volcanos (EVR/LVR/EVL) + 1 dual twin-axis volcano (Early ● bottom-x/left-y, Late ■ top-x/right-y, shared NES, dynamic Y floor 3 cap 20, off-scale = ▲, sig+direction colours, concordant-sig labels) + the same 4 for TFs; dotplots; celltype×pathway NES heatmaps; sex×age concordance matrices; per-cell ridges + localization grid; trajectory (brain only); leading-edge heatmaps.
+
+- **M8 dropped from ALL plots.** Tabula-Muris-Senis / Descartes / Zhang-uterus etc. are cell-IDENTITY signatures, not pathways — noise that rode along in the default msigdbr MH/M2/M5/M8 export. One global filter at load: `gsea = gsea[gsea["collection"].isin(["MH","M2","M5"])]`. This is the authoritative "what we plot" gate; it propagates to EVERY plot (the panels loop `COLLECTIONS`, but ridges/concordance/localization grid/trajectory/leading-edge select pathways from the dataframe, so only a load-time filter catches all of them). M8 stays in the CSV + the per-cell AUCell h5ad (harmless — never selected). Strip from compute only if 8c is ever re-run from scratch.
+- **Per-cell UMAPs replaced by a per-cell-type pathway-localization grid.** One figure per tissue: a grid of mini-UMAPs, one panel per major cell type, coloured by THAT cell type's top relevant pathway's AUCell (combined sex, groups pooled, ~100K cells subsampled, target cell type outlined). Purpose = validation/QC: does each detected pathway localize to a sensible cell type. NOT a stress result. Per-cell plots (this grid + ridges) are orientation only — rigorous pathway evidence is pseudobulk GSEA NES/FDR + concordance + the 8b disruption analysis. Announced skip when none of a cell type's sig pathways were scored into the per-cell h5ad (seen for placenta myeloid/nk subclusters — upstream scoring question, not a plotting bug).
+- **Contrast-family prefix matching (reusable gotcha).** Brain uses generic contrast names (`early_vs_relaxed_per_age`) with age in `group_level`; placenta bakes the age into the name (`early_vs_relaxed_E12.5`, `late_vs_relaxed_E18.5`). NEVER match contrast names by exact string across tissues. `contrast_family()` resolves by prefix → EVR / LVR / EVL / WAA; a derived `cfam` column drives every contrast filter. This bug silently produced placenta plots with ONLY `per_cell/` until fixed — the per-slice volcano/dotplot/heatmap/leading-edge filters matched nothing, and the "volcano slices plotted: N" log counter counts slices VISITED not files WRITTEN, so it looked fine. **Lift `contrast_family` into `_utils.py` and reuse in 8f/8g** — same cross-tissue naming applies there.
+- **GO-relevance M5 label restriction (placenta-main only).** `config/celltype_go_relevance.yaml` (built by `build_go_relevance.py` from `config/celltype_go_keywords.yaml`) restricts which M5 GO terms get LABELED — volcano labels + dotplot rows + celltype×pathway heatmap cols (tissue-union for the cross-celltype heatmap). Brain has no entries → unrestricted (top-N by FDR). Does NOT touch concordance / ridges / localization grid.
+- **Placenta correctly produces no concordance and no trajectory:** no same-age Early-vs-Late (E12.5 = Early-only, E18.5 = Late-only) and no `within_group_across_age` contrast. (concordance = 0, trajectory empty — expected, not a bug.)
+- **Deferred:** the trajectory draws degenerate single-dot panels for sparse region×celltype slices (only one age-pair survives, e.g. CTXsp Immune = 4W_3mo only). Guard (whole-level only + require ≥2 age-pairs, then it draws real lines) deferred — fold in only if 8c summary is re-run for another reason.
 
 ## Phase 9 — two scientific arms (locked 2026-06-05)
 Cross-species RRHO2 validation runs as TWO arms reported separately, NOT pooled.
@@ -328,30 +339,11 @@ The 8b master CSV reports DE on ALL genes. For visualization (heatmap top rows, 
 - **Filenames carry the phase prefix** for identifiability when copied out.
 - **Subcluster runs go to suffixed folders** (`plots/08e_communication_subcluster_excitatory_neurons/...`).
 - **8b follow-ups share the 08b_de phase folder** — both tables and plots. Plots live under `plots/08b_de/summary/{disruption,consistency,shuffle_test}/{sex}/{level}.png`. Tables alongside the main 8b results CSV in `tables/08b_de/`.
-
-## Offline-audit CSVs (no workstation access post-run)
-- **02_soupx** `02_soupx_summary.csv` — per-sample rho_mean, rho_min, rho_max, pct_removed, n_cells, n_clusters, elapsed_sec, mode (autoEst | manual).
-- **07** `07_annotation_class_per_cluster_age.csv` — augmented with `markers_checked`, `markers_present`, `gate_outcome`, `gate_label`.
-- **07** `07_annotation_age_composition_sanity.csv` — developmentally-implausible (cluster × age) rows.
-- **07e** `07e_celltype_counts.csv` — per-donor × cell-type counts (brain: 3 granularities × whole+regions; placenta: whole only). Sanity-check for 8a inputs; paper Table S?.
-- **8a** `08a_dropped_cells_per_donor.csv` — per-donor contaminant + unassigned counts/fractions (the mass dropped from the tested composition).
-- **8b** `08b_de_gene_expression_per_sample.csv` — per-sample mean lognorm of DE genes, keyed celltype × gene × sample_id.
-- **8b follow-ups** `08b_developmental_disruption_summary.csv` — per (sex × level × celltype): 5 direction-class gene counts (universal / relaxed_only=LOST / stress_shared=GAINED / early_only / late_only) + mean `|LFC|` per group for the LOST class (the effect-size collapse columns).
-- **8b follow-ups** `08b_developmental_disruption_genes.csv` — long-form gene-level direction class assignments per (sex × level × celltype × gene).
-- **8b follow-ups** `08b_disruption_shuffle_test.csv` — k-preserving null per (sex × level × celltype): 6 disjoint sig-pattern category counts (R-only / E-only / L-only / R∩E / R∩L / E∩L), `n_k0..n_k3`, 6 categories × {enrichment p, depletion p} × {raw, BH}, within-stratum chi-square (`chi2_k1`, `chi2_k2` + p-values), permutation-null sanity check on the LOST/GAINED diff. Headline columns for the paper: `obs_lost`, `obs_gained`, `obs_r_only`, `obs_re_only`, `obs_el_only`, `p_lost_BH`, `p_gained_dep_BH`, `p_re_only_enr_BH`, `p_el_only_dep_BH`.
-- **8c** `08c_pathway_leading_edge.csv` — genes driving each significant pathway with log2FC + direction.
-- **8c** `08c_tf_activity.csv` — TF activity scores + FDR per contrast×celltype×TF.
-- **8d** `08d_trajectory_paga_edge_diagnostics.csv` — per cell-type-pair edge audit.
-- **8e** `08e_lr_quantified.csv` — per-donor LR scores backing the Mann-Whitney comparisons.
-- **8f** `08f_lr_cross_tissue.csv` — placental ligand × brain receptor mechanism hypotheses with `stress_axis` flag column. Publication-quality output.
-- **8g** `08g_core_signature_genes.csv` — features persistent in BOTH stress arms with consistent direction. Paper-quality "core stress signature".
+- **8c summary plots** live under `plots/08c_pathways{,_subcluster_*}/`: `combined/<level>/<celltype>/` (volcanos + dotplots), `_celltype_heatmaps/`, `concordance/` (brain only), `per_cell/` (ridges + `pathway_localization_grid.png`), `trajectory/` (brain only), `leading_edge/`.
 
 ## Ask before strong scientific calls
 - Don't drop an analysis, exclude samples/ages, or add complexity (extra tools, sidecar venvs) without checking it earns its place for THIS dataset. Surface the question; don't bake the decision in silently.
 - Specifically don't propose: cross-tissue cell-cell communication (BBB makes it implausible — 8f view 4 is the correctly framed endocrine version); RNA velocity / CellRank (10x Flex probe-based, no spliced/unspliced); scCODA (dependency stack fights scanpy; propeller replaces it).
-
-## Always state where files go
-When presenting files in a Claude response, ALWAYS say which directory each one goes into (scripts/, config/, refs/, repo root, etc.). Don't leave the user to guess.
 
 ## Workstation infrastructure
 - **SSH:** `ssh poller@172.17.213.147` (from Mac). User: `poller`.

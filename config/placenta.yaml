@@ -520,3 +520,31 @@ stress_focused_cell_types:
 - excitatory_neurons
 - inhibitory_neurons
 - astrocytes
+trajectory:
+  whole_paga_key: celltype_majority
+  mature_quantile: 0.66
+  min_donors: 2
+  reliable_donors: 3
+  within_age: true
+  lineages:
+    trophoblast:
+      celltypes:
+      - LaTP
+      - SynTI
+      - SynTII
+      - S-TGC
+      - SpT
+      - JZP
+      - GC
+      root: LaTP
+      order:
+      - LaTP
+      - SynTI
+      - SynTII
+      markers:
+      - Gcm1
+      - Synb
+      - Ndrg1
+      - Tpbpa
+      - Ctsq
+      - Hand1

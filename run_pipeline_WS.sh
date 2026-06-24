@@ -242,9 +242,41 @@ done
 
 
 # =============================================================================
-# Phase 8d — Trajectory (PAGA + DPT)
+# Phase 8d — Trajectory (PAGA + diffusion pseudotime). Supplementary/mechanistic.
 # =============================================================================
-uv run python scripts/08d_trajectory.py --config "$CONFIG"
+# Two modes per the trajectory: block in each YAML:
+#   - whole-tissue PAGA (no --subcluster): celltypist_broad / celltype_majority
+#     connectivity graph + edge diagnostics. Does NOT modify X_umap.
+#   - focal-lineage DPT (--subcluster <lineage>): per-donor median pseudotime +
+#     mature fraction, MW-U pairwise + KW omnibus (animal as unit; sex strata
+#     combined/M/F; all low_n at n≈4). DPT is WITHIN-AGE both tissues (a cross-age
+#     brain axis tracks the P1-vs-adult gap, not OPC→MOL maturation — smoke test
+#     2026-06-22). No RNA velocity/CellRank (10x Flex exon-only).
+# Lineage names = 08c subcluster h5ad basenames (brain) / trophoblast (placenta),
+# NOT the CELL_TYPES display names. immune runs two roots (PAM_ATM + Homeostatic;
+# state axis, not a lineage). Lineage objects are small (26-66K cells); whole-tissue
+# PAGA loads the full annotated object (~661K brain / ~397K placenta) — the long pole.
+BRAIN_LINEAGES=(opc_oligodendrocytes astrocytes_ependymal immune)
+PLACENTA_LINEAGES=(trophoblast)
+
+# --- focal-lineage DPT (picks the array matching your $CONFIG) ---
+if [[ "$CONFIG" == *placenta* ]]; then
+  LINEAGES=("${PLACENTA_LINEAGES[@]}")
+else
+  LINEAGES=("${BRAIN_LINEAGES[@]}")
+fi
+for lin in "${LINEAGES[@]}"; do
+  uv run python scripts/08d_trajectory.py --config "$CONFIG" --subcluster "$lin"
+done
+
+# --- whole-tissue PAGA (tmux — neighbors on the full object is ~15-30 min) ---
+tmux new -s traj_whole -d \
+  "uv run python scripts/08d_trajectory.py --config $CONFIG \
+   2>&1 | tee logs/08d_wholePAGA.log"
+# Outputs:
+#   results/<tissue>/tables/08d_trajectory{,_subcluster_<lin>}/*_dpt_*.csv
+#   results/<tissue>/tables/08d_trajectory{,_subcluster_<lin>}/*_paga_edge_diagnostics.csv
+#   results/<tissue>/plots/08d_trajectory_subcluster_<lin>/{paga,pseudotime/<age>/<root>,per_donor/<sex>}/
 
 
 # =============================================================================
