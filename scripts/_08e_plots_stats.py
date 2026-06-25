@@ -43,6 +43,17 @@ def _lr_label(row):
     return f"{row['ligand_complex']}→{row['receptor_complex']}"
 
 
+def _apply_stat_floor(sub, quantile):
+    """Slice-specific effect floor: drop rows whose |interaction_stat| is below the
+    `quantile`-th percentile WITHIN this already-significance-filtered slice. Returns
+    the filtered frame (unchanged if quantile<=0 or slice too small)."""
+    if quantile is None or quantile <= 0 or sub.empty:
+        return sub
+    floor = sub["interaction_stat"].abs().quantile(quantile)
+    out = sub[sub["interaction_stat"].abs() >= floor]
+    return out if not out.empty else sub
+
+
 def _neg_log10(padj):
     p = np.asarray(padj, dtype=float)
     p = np.where(~np.isfinite(p) | (p <= 0), np.nan, p)
@@ -138,7 +149,7 @@ def plot_differential_volcano(diff_df, contrast_name, age, top_n, pdir):
 # Differential dotplot (top sig pairs, ★ FDR<0.05)
 # ---------------------------------------------------------------------------
 
-def plot_differential_dotplot(diff_df, contrast_name, age, top_n, pdir):
+def plot_differential_dotplot(diff_df, contrast_name, age, top_n, pdir, quantile=0.0):
     sub = diff_df[(diff_df["contrast_name"] == contrast_name) &
                   (diff_df["age"].astype(str) == str(age))].copy()
     sub = sub.dropna(subset=["interaction_stat", "interaction_padj"])
@@ -147,7 +158,8 @@ def plot_differential_dotplot(diff_df, contrast_name, age, top_n, pdir):
     sub["nlp"] = _neg_log10(sub["interaction_padj"])
     sub["abs"] = sub["interaction_stat"].abs()
     sub["sig"] = sub["interaction_padj"] < FDR_THRESH
-    top = sub.nlargest(top_n, "abs").sort_values("interaction_stat")
+    sig = _apply_stat_floor(sub[sub["sig"]], quantile)
+    top = sig.nlargest(top_n, "abs").sort_values("interaction_stat")
     if top.empty:
         return
     labels = [f"{_lr_label(r)}  [{r['source']}→{r['target']}]" for _, r in top.iterrows()]
@@ -179,11 +191,13 @@ def plot_differential_dotplot(diff_df, contrast_name, age, top_n, pdir):
 # Δ signalling network (cell-type graph from differential, FDR-filtered)
 # ---------------------------------------------------------------------------
 
-def _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, focus=None):
+def _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, focus=None,
+                              quantile=0.0):
     sub = diff_df[(diff_df["contrast_name"] == contrast_name) &
                   (diff_df["age"].astype(str) == str(age))].copy()
     sub = sub.dropna(subset=["interaction_stat", "interaction_padj"])
     sub = sub[sub["interaction_padj"] < fdr_thresh]
+    sub = _apply_stat_floor(sub, quantile)
     if focus:
         sub = sub[sub["source"].isin(focus) | sub["target"].isin(focus)]
     if sub.empty:
@@ -198,8 +212,8 @@ def _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, focus=Non
 
 
 def plot_delta_network(diff_df, contrast_name, age, pdir,
-                       fdr_thresh=FDR_THRESH, focus=None, min_edges=1):
-    agg = _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, focus)
+                       fdr_thresh=FDR_THRESH, focus=None, min_edges=1, quantile=0.0):
+    agg = _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, focus, quantile)
     if agg.empty or len(agg) < min_edges:
         print(f"  [info] delta_network {contrast_name}/{age}: no FDR<{fdr_thresh} edges")
         return
@@ -238,10 +252,10 @@ def plot_delta_network(diff_df, contrast_name, age, pdir,
     print(f"  Plot: {out.name}  ({len(agg)} sig cell-type edges)")
 
 
-def plot_delta_celltype_heatmap(diff_df, contrast_name, age, pdir, fdr_thresh=FDR_THRESH):
+def plot_delta_celltype_heatmap(diff_df, contrast_name, age, pdir, fdr_thresh=FDR_THRESH, quantile=0.0):
     """source×target matrix of net signed interaction_stat over FDR<thresh pairs.
     Chord-equivalent, fully readable, carries direction + significance."""
-    agg = _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh)
+    agg = _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, quantile=quantile)
     if agg.empty:
         return
     cts = sorted(set(agg["source"]) | set(agg["target"]))
@@ -282,17 +296,12 @@ def _bezier(p0, p1, p2, n=40):
     return (1 - t) ** 2 * p0 + 2 * (1 - t) * t * p1 + t ** 2 * p2
 
 
-def plot_delta_chord(diff_df, contrast_name, age, pdir,
+def _plot_delta_chord_unused(diff_df, contrast_name, age, pdir,
                      fdr_thresh=FDR_THRESH, focus=None, max_nodes_warn=12,
                      all_edges=True):
-    """Directional Δ chord. Each ribbon = a source→target cell-type pair.
-      - width  ∝ |mean signed interaction_stat| (the DIFFERENCE magnitude)
-      - direction: ribbon is narrow at the source arc, wide at the target arc,
-        with an arrowhead at the target (source→target signalling)
-      - colour: red = up / blue = down in test group
-      - SIGNIFICANT edges (≥1 FDR<thresh LR pair) get a dark outline; if
-        all_edges, non-sig pairs are drawn faded with no outline for context.
-    """
+    """DEAD CODE — superseded by the plot_delta_chord defined later in this module.
+    Kept (renamed) only because the matplotlib-Path helpers below it are shared by
+    the active version; do not call."""
     sub = diff_df[(diff_df["contrast_name"] == contrast_name) &
                   (diff_df["age"].astype(str) == str(age))].copy()
     sub = sub.dropna(subset=["interaction_stat", "interaction_padj"])
@@ -419,7 +428,7 @@ def _ribbon_path(S, T, w_s, w_t, bend=0.45):
     return MplPath(verts, codes)
 
 
-def plot_delta_chord(diff_df, contrast_name, age, pdir, fdr_thresh=FDR_THRESH, focus=None):
+def plot_delta_chord(diff_df, contrast_name, age, pdir, fdr_thresh=FDR_THRESH, focus=None, quantile=0.0):
     """Directed chord of significant signalling changes.
     Encoding: taper = direction (narrow=source → wide=target);
               width  = #FDR<thresh LR pairs (strength of change);
@@ -428,7 +437,7 @@ def plot_delta_chord(diff_df, contrast_name, age, pdir, fdr_thresh=FDR_THRESH, f
               only source→target pairs with ≥1 FDR<thresh LR pair are drawn.
     No cell-type-count cap (drawn even for many types)."""
     from matplotlib.patches import PathPatch, Patch
-    agg = _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, focus)
+    agg = _aggregate_celltype_edges(diff_df, contrast_name, age, fdr_thresh, focus, quantile)
     if agg.empty:
         print(f"  [info] delta_chord {contrast_name}/{age}: no FDR<{fdr_thresh} edges")
         return
@@ -488,7 +497,7 @@ def plot_delta_chord(diff_df, contrast_name, age, pdir, fdr_thresh=FDR_THRESH, f
 # Sender / receiver up-down bars (differential polarization, FDR-backed)
 # ---------------------------------------------------------------------------
 
-def plot_sender_receiver_updown_bars(diff_df, contrast_name, age, pdir, fdr=0.05):
+def plot_sender_receiver_updown_bars(diff_df, contrast_name, age, pdir, fdr=0.05, quantile=0.0):
     """Per cell type: # significantly UP vs DOWN differential LR pairs, split by role
     (as sender / as receiver). The honest summary of differential signalling
     polarization (matches the 8b per-celltype up/down structure). FDR-backed."""
@@ -496,6 +505,7 @@ def plot_sender_receiver_updown_bars(diff_df, contrast_name, age, pdir, fdr=0.05
                 (diff_df["age"].astype(str) == str(age))].copy()
     d = d.dropna(subset=["interaction_stat", "interaction_padj"])
     d = d[d["interaction_padj"] < fdr]
+    d = _apply_stat_floor(d, quantile)
     if d.empty:
         return
     d["dir"] = np.where(d["interaction_stat"] > 0, "up", "down")

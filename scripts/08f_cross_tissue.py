@@ -7,36 +7,43 @@ The headline cross-tissue analysis. Two biologically aligned arms (project doc �
   - Late  arm: E18.5 placenta (Late-vs-Relaxed)  → P1/4W/3mo brain (Late-vs-Relaxed)
     (Brain P1 Late carries 'confounded_with_pool' flag — propagated to output)
 
-Four analytical views (all operate on completed 8b/8c tables — no re-running DE):
+Six analytical views (all operate on completed 8b/8c tables — no re-running DE).
+Join is always placenta-WHOLE × brain-{whole + 13 regions} (placenta is whole-only),
+so every output row/path carries a `brain_level`:
   1. DEG overlap         — Hypergeometric test of overlapping DEGs per ct_pair
   2. RRHO                — Rank-rank hypergeometric overlap (custom NumPy impl)
   3. Pathway concordance — Same-direction pathway hits per ct_pair (from 8c)
   4. LR cross-tissue     — Placental ligand × brain receptor mechanistic
-                           hypotheses (liana mouseconsensus)
+                           hypotheses (liana mouseconsensus) — KEY publication table
+  5. TF concordance      — Same-direction TF activity per ct_pair (from 8c --tf)
+  6. Overlap-gene ORA    — MSigDB enrichment of the concordant overlap gene set
 
-A 5th view (bulk-deconvolved sample-level concordance) is deferred to a later
-session per user decision; placeholder section marked with `# TODO 5th view`.
+Filters (all views): sex stratum = --sex (default combined); placenta level = whole;
+brain level iterates whole + regions. DEG cutoff |log2FC| > --logfc-cutoff (default 1.0,
+matches 8b) & padj < --padj-cutoff.
+
+A 7th view (bulk-deconvolved sample-level concordance) is deferred to a later
+session per user decision; placeholder marked with `# TODO 7th view`.
 
 Inputs:
   results/brain/tables/08b_de/08b_de_results.csv
-  results/brain/tables/08c_pathways/08c_pathway_results.csv
+  results/brain/tables/08c_pathways/08c_pathway_results.csv (+ 08c_tf_activity.csv)
   results/placenta/tables/08b_de/08b_de_results.csv
-  results/placenta/tables/08c_pathways/08c_pathway_results.csv
+  results/placenta/tables/08c_pathways/08c_pathway_results.csv (+ 08c_tf_activity.csv)
 
 Outputs:
   plots/08f_cross_tissue/
-    01_overview/                          — total overlap heatmaps per arm
-    02_deg_overlap/{arm}_{brain_age}/     — hypergeom heatmaps per cell-type-pair
-    03_rrho/{arm}_{brain_age}/            — RRHO heatmaps + concordance summary
-    04_pathway_concordance/{arm}_{brain_age}/  — pathway dotplots
-    05_lr_cross_tissue/{arm}_{brain_age}/      — LR mechanism scatters
+    01_overview/                                  — overlap heatmaps per arm×age×level
+    02_deg_overlap/{arm}_{brain_age}/{brain_level}/
+    03_rrho/{arm}_{brain_age}/{brain_level}/
+    04_pathway_concordance/{arm}_{brain_age}/{brain_level}/
+    05_lr_cross_tissue/{arm}_{brain_age}/{brain_level}/
+    06_tf_concordance/{arm}_{brain_age}/{brain_level}/
+    07_overlap_enrichment/{arm}_{brain_age}/{brain_level}/
 
   tables/08f_cross_tissue/
-    08f_deg_overlap.csv                — every {arm × brain_age × pl_ct × br_ct} test
-    08f_rrho_summary.csv               — max -log10(p), concordance class per ct_pair
-    08f_pathway_concordance.csv        — pathway × ct_pair × arm × brain_age
-    08f_lr_cross_tissue.csv            — KEY: mechanistic LR hypotheses
-                                         (placental ligand → brain receptor)
+    08f_deg_overlap.csv / 08f_rrho_summary.csv / 08f_pathway_concordance.csv
+    08f_lr_cross_tissue.csv (KEY) / 08f_tf_concordance.csv / 08f_overlap_enrichment.csv
 
 Usage:
   uv run python scripts/08f_cross_tissue.py \\
@@ -112,12 +119,21 @@ def parse_args():
                    help="Output dir for tables/plots (default: brain config's results_dir)")
     p.add_argument("--padj-cutoff", type=float, default=0.05,
                    help="FDR cutoff for calling a gene DEG (default 0.05)")
-    p.add_argument("--logfc-cutoff", type=float, default=0.5,
-                   help="|log2FC| cutoff for DEG calling (default 0.5)")
+    p.add_argument("--logfc-cutoff", type=float, default=1.0,
+                   help="|log2FC| cutoff for DEG calling (default 1.0, matches 8b)")
     p.add_argument("--pathway-fdr-cutoff", type=float, default=0.1,
                    help="FDR cutoff for calling a pathway hit (default 0.1)")
+    p.add_argument("--sex", type=str, default="combined",
+                   choices=["combined", "M", "F"],
+                   help="Sex stratum to use on both tissues (default combined; "
+                        "M/F are low_n exploratory per Phase 8 conventions)")
     p.add_argument("--top-n-label", type=int, default=20,
-                   help="Top N items to label on plots (default 20)")
+                   help="Hard backstop: max items to plot after the quantile floor (default 20)")
+    p.add_argument("--plot-quantile", type=float, default=0.75,
+                   help="Plot-only density floor: keep items whose effect statistic is "
+                        ">= this quantile WITHIN each plot's own slice (default 0.75 = top "
+                        "quartile). Tables are unaffected. Floors the LR bar + pathway/TF "
+                        "dotplots only; heatmaps and distribution scatters are never floored.")
     p.add_argument("--dev-test", action="store_true",
                    help="Smoke test mode: treat the 'placenta' input as duplicated "
                         "brain data, remap arms to brain contrasts so joins exercise. "
@@ -146,19 +162,19 @@ def load_tissue_tables(cfg, tissue_label):
     tf_df = pd.DataFrame()
 
     if de_path.is_file():
-        de_df = pd.read_csv(de_path)
+        de_df = pd.read_csv(de_path, low_memory=False)
         print(f"  [{tissue_label}] 08b DE: {len(de_df):,} rows from {de_path.name}")
     else:
         print(f"  [{tissue_label}] [warn] 08b DE not found at {de_path}")
 
     if pw_path.is_file():
-        pw_df = pd.read_csv(pw_path)
+        pw_df = pd.read_csv(pw_path, low_memory=False)
         print(f"  [{tissue_label}] 08c pathways: {len(pw_df):,} rows from {pw_path.name}")
     else:
         print(f"  [{tissue_label}] [warn] 08c pathways not found at {pw_path}")
 
     if tf_path.is_file():
-        tf_df = pd.read_csv(tf_path)
+        tf_df = pd.read_csv(tf_path, low_memory=False)
         print(f"  [{tissue_label}] 08c TF activity: {len(tf_df):,} rows from {tf_path.name}")
     else:
         print(f"  [{tissue_label}] [info] 08c TF activity not found "
@@ -168,24 +184,35 @@ def load_tissue_tables(cfg, tissue_label):
 
 
 def _extract_age(group_level):
-    """08b group_level encodes age as 'age-4W' (and sex as 'sex-M' etc)."""
-    if not isinstance(group_level, str):
-        return None
-    for part in group_level.split("_"):
-        if part.startswith("age-"):
-            return part[4:]
-    return None
+    """For the per-age contrasts 8f uses, group_level holds the age DIRECTLY
+    (P1 / 4W / 3mo / E12.5 / E18.5) — not an 'age-4W' encoding. Return as-is."""
+    return group_level if isinstance(group_level, str) else None
 
 
-def prep_de_df(de_df, contrast_name, age_filter=None):
-    """Filter to one contrast and optionally one age. Returns gene-level rows only
-    with normalised columns: celltype, gene, stat, padj, log2FC, age."""
+def _apply_strata(sub, sex="combined", level="whole"):
+    """Filter a DE/pathway/TF frame to one sex stratum and one level.
+    sex/level == None means 'do not filter on that axis' (used for the
+    pre-check that asks whether ANY rows exist for a contrast×age)."""
+    if sex is not None and "sex" in sub.columns:
+        sub = sub[sub["sex"] == sex]
+    if level is not None and "level" in sub.columns:
+        sub = sub[sub["level"] == level]
+    return sub
+
+
+def prep_de_df(de_df, contrast_name, age_filter=None, sex="combined", level="whole"):
+    """Filter to one contrast, sex stratum, level, and optionally one age. Returns
+    gene-level rows only with normalised columns: celltype, gene, stat, padj,
+    log2FC, age. sex/level=None skips that filter."""
     if de_df.empty:
         return pd.DataFrame()
     if "contrast" not in de_df.columns:
         return pd.DataFrame()
 
     sub = de_df[de_df["contrast"] == contrast_name].copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub = _apply_strata(sub, sex=sex, level=level)
     if sub.empty:
         return pd.DataFrame()
     sub = sub.dropna(subset=["gene", "stat"])
@@ -197,14 +224,17 @@ def prep_de_df(de_df, contrast_name, age_filter=None):
     return sub[["celltype", "gene", "stat", "padj", "log2FC", "age"]].copy()
 
 
-def prep_pw_df(pw_df, contrast_name, age_filter=None):
+def prep_pw_df(pw_df, contrast_name, age_filter=None, sex="combined", level="whole"):
     """Same idea for 08c pathway table.
-    08c actual schema: contrast, flag, group_level, celltype, source (= pathway
-    NAME, not 'pathway'), collection, NES, pvalue, FDR, FDR_pooled, note.
+    08c actual schema: tissue, sex, contrast, flag, group_level, pair, level,
+    celltype, collection, source (= pathway NAME), NES, pvalue, FDR, FDR_pooled.
     We rename source→pathway and FDR→padj for consistency in 8f."""
     if pw_df.empty or "contrast" not in pw_df.columns:
         return pd.DataFrame()
     sub = pw_df[pw_df["contrast"] == contrast_name].copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub = _apply_strata(sub, sex=sex, level=level)
     if sub.empty:
         return pd.DataFrame()
     sub["age"] = sub["group_level"].map(_extract_age)
@@ -221,13 +251,16 @@ def prep_pw_df(pw_df, contrast_name, age_filter=None):
     return sub
 
 
-def prep_tf_df(tf_df, contrast_name, age_filter=None):
+def prep_tf_df(tf_df, contrast_name, age_filter=None, sex="combined", level="whole"):
     """Filter 08c TF activity table.
-    08c schema: contrast, flag, group_level, celltype, TF, activity_score,
-    pvalue, FDR, direction, note. Rename FDR→padj for consistency."""
+    08c schema: tissue, sex, contrast, flag, group_level, pair, level, celltype,
+    TF, activity_score, pvalue, FDR, direction, ... Rename FDR→padj."""
     if tf_df.empty or "contrast" not in tf_df.columns:
         return pd.DataFrame()
     sub = tf_df[tf_df["contrast"] == contrast_name].copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub = _apply_strata(sub, sex=sex, level=level)
     if sub.empty:
         return pd.DataFrame()
     sub["age"] = sub["group_level"].map(_extract_age)
@@ -268,6 +301,15 @@ STRESS_AXIS_GENES = {
 # View 1: DEG overlap (hypergeometric per cell-type pair)
 # ============================================================================
 
+def _brain_levels(brain_de):
+    """All brain levels present (whole + regions), whole first. Placenta is
+    whole-only, so every cross-tissue join is placenta-whole × brain-<level>."""
+    if brain_de.empty or "level" not in brain_de.columns:
+        return ["whole"]
+    levs = sorted(brain_de["level"].dropna().astype(str).unique())
+    return (["whole"] if "whole" in levs else []) + [l for l in levs if l != "whole"]
+
+
 def deg_overlap_test(genes_a, genes_b, gene_universe):
     """Hypergeometric test for overlap of two gene sets in a common universe.
     Returns (n_overlap, n_a, n_b, n_universe, p_value)."""
@@ -291,78 +333,90 @@ def run_view1_deg_overlap(brain_de, placenta_de, args):
     from statsmodels.stats.multitest import multipletests
     print("\n[View 1] DEG overlap (hypergeometric)")
     rows = []
+    brain_levels = _brain_levels(brain_de)
 
     for arm in ARMS:
-        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"])
+        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"],
+                           sex=args.sex, level="whole")
         if pl_de.empty:
-            print(f"  [skip] Arm {arm['arm']}: no placenta DE for "
-                  f"{arm['placenta_contrast']} / {arm['placenta_age']}")
+            print(f"  [warn] Arm {arm['arm']}: no placenta DE for "
+                  f"{arm['placenta_contrast']} / {arm['placenta_age']} "
+                  f"(sex={args.sex}, level=whole) — arm skipped")
             continue
         for br_age in arm["brain_ages"]:
-            br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age)
-            if br_de.empty:
-                print(f"  [skip] Arm {arm['arm']} brain {br_age}: no DE")
+            # Pre-check: does this brain contrast×age exist at all (any level)?
+            br_any = prep_de_df(brain_de, arm["brain_contrast"], br_age,
+                                sex=args.sex, level=None)
+            if br_any.empty:
+                print(f"  [warn] Arm {arm['arm']} brain {br_age}: NO DE rows for "
+                      f"contrast={arm['brain_contrast']} sex={args.sex} "
+                      f"(check contrast name / age encoding)")
                 continue
 
-            # Universe = genes tested in either tissue (intersection)
-            gene_universe = set(pl_de["gene"]) & set(br_de["gene"])
-            if len(gene_universe) < 100:
-                print(f"  [warn] Arm {arm['arm']} brain {br_age}: "
-                      f"only {len(gene_universe)} genes in common universe")
-                continue
+            for br_level in brain_levels:
+                br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age,
+                                   sex=args.sex, level=br_level)
+                if br_de.empty:
+                    continue  # region legitimately absent for this slice
 
-            confound = arm["confound_flags"].get(br_age, "")
+                # Universe = genes tested in either tissue (intersection)
+                gene_universe = set(pl_de["gene"]) & set(br_de["gene"])
+                if len(gene_universe) < 100:
+                    continue
 
-            for pl_ct, br_ct in product(pl_de["celltype"].unique(),
-                                        br_de["celltype"].unique()):
-                pl_sub = pl_de[pl_de["celltype"] == pl_ct]
-                br_sub = br_de[br_de["celltype"] == br_ct]
+                confound = arm["confound_flags"].get(br_age, "")
 
-                pl_sig = pl_sub[(pl_sub["padj"] < args.padj_cutoff) &
-                                (pl_sub["log2FC"].abs() > args.logfc_cutoff)]
-                br_sig = br_sub[(br_sub["padj"] < args.padj_cutoff) &
-                                (br_sub["log2FC"].abs() > args.logfc_cutoff)]
+                for pl_ct, br_ct in product(pl_de["celltype"].unique(),
+                                            br_de["celltype"].unique()):
+                    pl_sub = pl_de[pl_de["celltype"] == pl_ct]
+                    br_sub = br_de[br_de["celltype"] == br_ct]
 
-                pl_up = set(pl_sig.loc[pl_sig["log2FC"] > 0, "gene"])
-                pl_dn = set(pl_sig.loc[pl_sig["log2FC"] < 0, "gene"])
-                br_up = set(br_sig.loc[br_sig["log2FC"] > 0, "gene"])
-                br_dn = set(br_sig.loc[br_sig["log2FC"] < 0, "gene"])
-                pl_all = pl_up | pl_dn
-                br_all = br_up | br_dn
+                    pl_sig = pl_sub[(pl_sub["padj"] < args.padj_cutoff) &
+                                    (pl_sub["log2FC"].abs() > args.logfc_cutoff)]
+                    br_sig = br_sub[(br_sub["padj"] < args.padj_cutoff) &
+                                    (br_sub["log2FC"].abs() > args.logfc_cutoff)]
 
-                # Three directional tests + one pooled
-                tests = {
-                    "concordant_up": (pl_up, br_up),
-                    "concordant_down": (pl_dn, br_dn),
-                    "discordant_pl_up_br_dn": (pl_up, br_dn),
-                    "any_overlap": (pl_all, br_all),
-                }
-                for direction, (a_set, b_set) in tests.items():
-                    n_o, n_a, n_b, n_u, p = deg_overlap_test(a_set, b_set,
-                                                              gene_universe)
-                    rows.append({
-                        "arm": arm["arm"],
-                        "brain_age": br_age,
-                        "placenta_celltype": pl_ct,
-                        "brain_celltype": br_ct,
-                        "direction": direction,
-                        "n_overlap": n_o,
-                        "n_placenta": n_a,
-                        "n_brain": n_b,
-                        "n_universe": n_u,
-                        "pvalue": p,
-                        "overlap_genes": ";".join(sorted(set(a_set) & set(b_set))[:50]),
-                        "confound_note": confound,
-                    })
+                    pl_up = set(pl_sig.loc[pl_sig["log2FC"] > 0, "gene"])
+                    pl_dn = set(pl_sig.loc[pl_sig["log2FC"] < 0, "gene"])
+                    br_up = set(br_sig.loc[br_sig["log2FC"] > 0, "gene"])
+                    br_dn = set(br_sig.loc[br_sig["log2FC"] < 0, "gene"])
+                    pl_all = pl_up | pl_dn
+                    br_all = br_up | br_dn
+
+                    # Three directional tests + one pooled
+                    tests = {
+                        "concordant_up": (pl_up, br_up),
+                        "concordant_down": (pl_dn, br_dn),
+                        "discordant_pl_up_br_dn": (pl_up, br_dn),
+                        "any_overlap": (pl_all, br_all),
+                    }
+                    for direction, (a_set, b_set) in tests.items():
+                        n_o, n_a, n_b, n_u, p = deg_overlap_test(a_set, b_set,
+                                                                  gene_universe)
+                        rows.append({
+                            "arm": arm["arm"],
+                            "brain_age": br_age,
+                            "brain_level": br_level,
+                            "placenta_celltype": pl_ct,
+                            "brain_celltype": br_ct,
+                            "direction": direction,
+                            "n_overlap": n_o,
+                            "n_placenta": n_a,
+                            "n_brain": n_b,
+                            "n_universe": n_u,
+                            "pvalue": p,
+                            "overlap_genes": ";".join(sorted(set(a_set) & set(b_set))[:50]),
+                            "confound_note": confound,
+                        })
 
     if not rows:
         print("  No DEG overlap tests produced.")
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    # BH-FDR within (arm, brain_age, direction)
+    # BH-FDR within (arm, brain_age, brain_level, direction)
     fdr_list = []
-    for _, g in df.groupby(["arm", "brain_age", "direction"]):
+    for _, g in df.groupby(["arm", "brain_age", "brain_level", "direction"]):
         _, fdr, _, _ = multipletests(g["pvalue"].fillna(1.0), method="fdr_bh")
         fdr_list.append(pd.Series(fdr, index=g.index))
     df["fdr"] = pd.concat(fdr_list)
@@ -403,17 +457,22 @@ def rrho_matrix(stats_a, stats_b, step=100):
         idx = np.linspace(0, len(cutoffs) - 1, 40).astype(int)
         cutoffs = cutoffs[idx]
 
-    mat = np.zeros((len(cutoffs), len(cutoffs)))
-    for i, ci in enumerate(cutoffs):
-        top_a = set(common[rank_a <= ci])
-        for j, cj in enumerate(cutoffs):
-            top_b = set(common[rank_b <= cj])
-            overlap = len(top_a & top_b)
-            if overlap == 0:
-                mat[i, j] = 0
-                continue
-            p = hypergeom.sf(overlap - 1, n, len(top_a), len(top_b))
-            mat[i, j] = -np.log10(max(p, 1e-300))
+    # Vectorized RRHO: overlap[i,j] = #genes with rank_a<=cutoffs[i] AND rank_b<=cutoffs[j].
+    # Membership matrices (k×n), then a single matmul for all overlaps, then ONE
+    # array-valued hypergeom.sf over the whole k×k grid. Identical output to the
+    # naive double loop; ~50-100× faster (no per-cell set rebuild, no per-cell scipy call).
+    ra = rank_a.to_numpy()
+    rb = rank_b.to_numpy()
+    cut = cutoffs[:, None]                              # (k, 1)
+    a_ind = (ra[None, :] <= cut).astype(np.float64)     # (k, n): top-ci membership of A
+    b_ind = (rb[None, :] <= cut).astype(np.float64)     # (k, n): top-cj membership of B
+    overlap = a_ind @ b_ind.T                           # (k, k): |top_a_i ∩ top_b_j|
+    na = a_ind.sum(axis=1)                              # (k,) = len(top_a) per cutoff
+    nb = b_ind.sum(axis=1)                              # (k,) = len(top_b) per cutoff
+    na_grid, nb_grid = np.meshgrid(na, nb, indexing="ij")
+    p = hypergeom.sf(overlap - 1, n, na_grid, nb_grid)  # array-valued; broadcasts
+    mat = -np.log10(np.maximum(p, 1e-300))
+    mat[overlap == 0] = 0.0                             # sf(-1)=1 already → 0, set explicit
     return mat, cutoffs
 
 
@@ -445,54 +504,65 @@ def run_view2_rrho(brain_de, placenta_de, args, plots_root):
     classify concordance, save plot. Returns summary table."""
     print("\n[View 2] RRHO (rank-rank hypergeometric overlap)")
     rows = []
+    brain_levels = _brain_levels(brain_de)
 
     for arm in ARMS:
-        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"])
+        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"],
+                           sex=args.sex, level="whole")
         if pl_de.empty:
+            print(f"  [warn] Arm {arm['arm']}: no placenta DE "
+                  f"(sex={args.sex}, level=whole) — arm skipped")
             continue
         for br_age in arm["brain_ages"]:
-            br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age)
-            if br_de.empty:
+            br_any = prep_de_df(brain_de, arm["brain_contrast"], br_age,
+                                sex=args.sex, level=None)
+            if br_any.empty:
+                print(f"  [warn] Arm {arm['arm']} brain {br_age}: NO DE rows "
+                      f"(contrast={arm['brain_contrast']}, sex={args.sex})")
                 continue
-
             confound = arm["confound_flags"].get(br_age, "")
-            pdir = plots_root / f"03_rrho/{arm['arm']}_{_slug(br_age)}"
-            pdir.mkdir(parents=True, exist_ok=True)
 
-            for pl_ct in pl_de["celltype"].unique():
-                pl_stats = (pl_de[pl_de["celltype"] == pl_ct]
-                            .set_index("gene")["stat"])
-                if len(pl_stats) < 200:
+            for br_level in brain_levels:
+                br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age,
+                                   sex=args.sex, level=br_level)
+                if br_de.empty:
                     continue
-                for br_ct in br_de["celltype"].unique():
-                    br_stats = (br_de[br_de["celltype"] == br_ct]
+                pdir = plots_root / f"03_rrho/{arm['arm']}_{_slug(br_age)}/{_slug(br_level)}"
+                pdir.mkdir(parents=True, exist_ok=True)
+
+                for pl_ct in pl_de["celltype"].unique():
+                    pl_stats = (pl_de[pl_de["celltype"] == pl_ct]
                                 .set_index("gene")["stat"])
-                    if len(br_stats) < 200:
+                    if len(pl_stats) < 200:
                         continue
+                    for br_ct in br_de["celltype"].unique():
+                        br_stats = (br_de[br_de["celltype"] == br_ct]
+                                    .set_index("gene")["stat"])
+                        if len(br_stats) < 200:
+                            continue
 
-                    mat, cutoffs = rrho_matrix(pl_stats, br_stats)
-                    if mat is None:
-                        continue
-                    klass, peak = classify_rrho_concordance(mat, cutoffs)
-                    # Spearman of the full ranked lists (single number summary)
-                    common = pl_stats.index.intersection(br_stats.index)
-                    rho, rho_p = spearmanr(pl_stats.loc[common], br_stats.loc[common])
+                        mat, cutoffs = rrho_matrix(pl_stats, br_stats)
+                        if mat is None:
+                            continue
+                        klass, peak = classify_rrho_concordance(mat, cutoffs)
+                        common = pl_stats.index.intersection(br_stats.index)
+                        rho, rho_p = spearmanr(pl_stats.loc[common], br_stats.loc[common])
 
-                    rows.append({
-                        "arm": arm["arm"], "brain_age": br_age,
-                        "placenta_celltype": pl_ct, "brain_celltype": br_ct,
-                        "concordance_class": klass,
-                        "peak_neg_log10_p": peak,
-                        "spearman_rho": float(rho),
-                        "spearman_p": float(rho_p),
-                        "n_common_genes": int(len(common)),
-                        "confound_note": confound,
-                    })
+                        rows.append({
+                            "arm": arm["arm"], "brain_age": br_age,
+                            "brain_level": br_level,
+                            "placenta_celltype": pl_ct, "brain_celltype": br_ct,
+                            "concordance_class": klass,
+                            "peak_neg_log10_p": peak,
+                            "spearman_rho": float(rho),
+                            "spearman_p": float(rho_p),
+                            "n_common_genes": int(len(common)),
+                            "confound_note": confound,
+                        })
 
-                    # Save per-pair RRHO heatmap only if concordance is meaningful
-                    if klass != "none":
-                        _plot_rrho(mat, cutoffs, pl_ct, br_ct, arm["arm"],
-                                   br_age, klass, peak, rho, pdir)
+                        if klass != "none":
+                            _plot_rrho(mat, cutoffs, pl_ct, br_ct, arm["arm"],
+                                       br_age, klass, peak, rho, pdir)
 
     if not rows:
         print("  No RRHO pairs produced.")
@@ -528,58 +598,63 @@ def run_view3_pathway_concordance(brain_pw, placenta_pw, args):
     concordance based on NES sign. Returns master table."""
     print("\n[View 3] Pathway concordance")
     rows = []
+    brain_levels = _brain_levels(brain_pw)
 
     for arm in ARMS:
-        pl_pw = prep_pw_df(placenta_pw, arm["placenta_contrast"], arm["placenta_age"])
+        pl_pw = prep_pw_df(placenta_pw, arm["placenta_contrast"], arm["placenta_age"],
+                           sex=args.sex, level="whole")
         if pl_pw.empty:
             continue
         for br_age in arm["brain_ages"]:
-            br_pw = prep_pw_df(brain_pw, arm["brain_contrast"], br_age)
-            if br_pw.empty:
-                continue
+            for br_level in brain_levels:
+                br_pw = prep_pw_df(brain_pw, arm["brain_contrast"], br_age,
+                                   sex=args.sex, level=br_level)
+                if br_pw.empty:
+                    continue
 
-            confound = arm["confound_flags"].get(br_age, "")
+                confound = arm["confound_flags"].get(br_age, "")
 
-            # Significant pathways per side
-            pl_sig = pl_pw[pl_pw["padj"] < args.pathway_fdr_cutoff].copy()
-            br_sig = br_pw[br_pw["padj"] < args.pathway_fdr_cutoff].copy()
-            if pl_sig.empty or br_sig.empty:
-                continue
+                # Significant pathways per side
+                pl_sig = pl_pw[pl_pw["padj"] < args.pathway_fdr_cutoff].copy()
+                br_sig = br_pw[br_pw["padj"] < args.pathway_fdr_cutoff].copy()
+                if pl_sig.empty or br_sig.empty:
+                    continue
 
-            pl_sig["direction"] = np.sign(pl_sig.get("NES", pd.Series(dtype=float))).fillna(0)
-            br_sig["direction"] = np.sign(br_sig.get("NES", pd.Series(dtype=float))).fillna(0)
+                pl_sig["direction"] = np.sign(pl_sig.get("NES", pd.Series(dtype=float))).fillna(0)
+                br_sig["direction"] = np.sign(br_sig.get("NES", pd.Series(dtype=float))).fillna(0)
 
-            # Join on pathway × celltype pair
-            for pl_ct, br_ct in product(pl_sig["celltype"].unique(),
-                                        br_sig["celltype"].unique()):
-                pl_ct_sig = pl_sig[pl_sig["celltype"] == pl_ct]
-                br_ct_sig = br_sig[br_sig["celltype"] == br_ct]
-                common_pw = set(pl_ct_sig["pathway"]) & set(br_ct_sig["pathway"])
-                for pw in common_pw:
-                    pl_row = pl_ct_sig[pl_ct_sig["pathway"] == pw].iloc[0]
-                    br_row = br_ct_sig[br_ct_sig["pathway"] == pw].iloc[0]
-                    direction_a = pl_row["direction"]
-                    direction_b = br_row["direction"]
-                    if direction_a == 0 or direction_b == 0:
-                        klass = "unknown"
-                    elif direction_a > 0 and direction_b > 0:
-                        klass = "concordant_up"
-                    elif direction_a < 0 and direction_b < 0:
-                        klass = "concordant_down"
-                    else:
-                        klass = "discordant"
-                    rows.append({
-                        "arm": arm["arm"], "brain_age": br_age,
-                        "placenta_celltype": pl_ct, "brain_celltype": br_ct,
-                        "pathway": pw,
-                        "placenta_NES": pl_row.get("NES"),
-                        "brain_NES": br_row.get("NES"),
-                        "placenta_padj": pl_row["padj"],
-                        "brain_padj": br_row["padj"],
-                        "concordance_class": klass,
-                        "collection": pl_row.get("collection"),
-                        "confound_note": confound,
-                    })
+                # Join on pathway × celltype pair
+                for pl_ct, br_ct in product(pl_sig["celltype"].unique(),
+                                            br_sig["celltype"].unique()):
+                    pl_ct_sig = pl_sig[pl_sig["celltype"] == pl_ct]
+                    br_ct_sig = br_sig[br_sig["celltype"] == br_ct]
+                    common_pw = set(pl_ct_sig["pathway"]) & set(br_ct_sig["pathway"])
+                    for pw in common_pw:
+                        pl_row = pl_ct_sig[pl_ct_sig["pathway"] == pw].iloc[0]
+                        br_row = br_ct_sig[br_ct_sig["pathway"] == pw].iloc[0]
+                        direction_a = pl_row["direction"]
+                        direction_b = br_row["direction"]
+                        if direction_a == 0 or direction_b == 0:
+                            klass = "unknown"
+                        elif direction_a > 0 and direction_b > 0:
+                            klass = "concordant_up"
+                        elif direction_a < 0 and direction_b < 0:
+                            klass = "concordant_down"
+                        else:
+                            klass = "discordant"
+                        rows.append({
+                            "arm": arm["arm"], "brain_age": br_age,
+                            "brain_level": br_level,
+                            "placenta_celltype": pl_ct, "brain_celltype": br_ct,
+                            "pathway": pw,
+                            "placenta_NES": pl_row.get("NES"),
+                            "brain_NES": br_row.get("NES"),
+                            "placenta_padj": pl_row["padj"],
+                            "brain_padj": br_row["padj"],
+                            "concordance_class": klass,
+                            "collection": pl_row.get("collection"),
+                            "confound_note": confound,
+                        })
 
     if not rows:
         print("  No pathway concordances produced.")
@@ -622,9 +697,11 @@ def run_view4_lr_cross_tissue(brain_de, placenta_de, args):
     print(f"  Loaded {len(lr_pairs):,} LR pairs from mouseconsensus")
 
     rows = []
+    brain_levels = _brain_levels(brain_de)
 
     for arm in ARMS:
-        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"])
+        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"],
+                           sex=args.sex, level="whole")
         if pl_de.empty:
             continue
         # Ligand candidates: genes DE in placenta
@@ -634,61 +711,64 @@ def run_view4_lr_cross_tissue(brain_de, placenta_de, args):
             continue
 
         for br_age in arm["brain_ages"]:
-            br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age)
-            if br_de.empty:
-                continue
-            br_sig = br_de[(br_de["padj"] < args.padj_cutoff) &
-                           (br_de["log2FC"].abs() > args.logfc_cutoff)]
-            if br_sig.empty:
-                continue
+            for br_level in brain_levels:
+                br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age,
+                                   sex=args.sex, level=br_level)
+                if br_de.empty:
+                    continue
+                br_sig = br_de[(br_de["padj"] < args.padj_cutoff) &
+                               (br_de["log2FC"].abs() > args.logfc_cutoff)]
+                if br_sig.empty:
+                    continue
 
-            confound = arm["confound_flags"].get(br_age, "")
+                confound = arm["confound_flags"].get(br_age, "")
 
-            # Match LR pairs where ligand is in pl_sig AND receptor in br_sig
-            pl_genes = set(pl_sig["gene"])
-            br_genes = set(br_sig["gene"])
-            cand = lr_pairs[lr_pairs["ligand"].isin(pl_genes) &
-                            lr_pairs["receptor"].isin(br_genes)]
-            if cand.empty:
-                continue
+                # Match LR pairs where ligand is in pl_sig AND receptor in br_sig
+                pl_genes = set(pl_sig["gene"])
+                br_genes = set(br_sig["gene"])
+                cand = lr_pairs[lr_pairs["ligand"].isin(pl_genes) &
+                                lr_pairs["receptor"].isin(br_genes)]
+                if cand.empty:
+                    continue
 
-            for _, lr in cand.iterrows():
-                lg, rg = lr["ligand"], lr["receptor"]
-                # All (pl_celltype, br_celltype) combinations where both pass
-                lg_rows = pl_sig[pl_sig["gene"] == lg]
-                rg_rows = br_sig[br_sig["gene"] == rg]
-                for _, lr_row in lg_rows.iterrows():
-                    for _, rr_row in rg_rows.iterrows():
-                        lfc_l = lr_row["log2FC"]
-                        lfc_r = rr_row["log2FC"]
-                        direction = (
-                            "concordant_up" if (lfc_l > 0 and lfc_r > 0) else
-                            "concordant_down" if (lfc_l < 0 and lfc_r < 0) else
-                            "discordant"
-                        )
-                        rows.append({
-                            "arm": arm["arm"], "brain_age": br_age,
-                            "ligand": lg, "receptor": rg,
-                            "placenta_celltype": lr_row["celltype"],
-                            "brain_celltype": rr_row["celltype"],
-                            "placenta_log2FC": lfc_l,
-                            "brain_log2FC": lfc_r,
-                            "placenta_padj": lr_row["padj"],
-                            "brain_padj": rr_row["padj"],
-                            "placenta_stat": lr_row["stat"],
-                            "brain_stat": rr_row["stat"],
-                            "direction": direction,
-                            "stress_axis": (
-                                "ligand+receptor"
-                                if lg in STRESS_AXIS_GENES and rg in STRESS_AXIS_GENES
-                                else "ligand"
-                                if lg in STRESS_AXIS_GENES
-                                else "receptor"
-                                if rg in STRESS_AXIS_GENES
-                                else ""
-                            ),
-                            "confound_note": confound,
-                        })
+                for _, lr in cand.iterrows():
+                    lg, rg = lr["ligand"], lr["receptor"]
+                    # All (pl_celltype, br_celltype) combinations where both pass
+                    lg_rows = pl_sig[pl_sig["gene"] == lg]
+                    rg_rows = br_sig[br_sig["gene"] == rg]
+                    for _, lr_row in lg_rows.iterrows():
+                        for _, rr_row in rg_rows.iterrows():
+                            lfc_l = lr_row["log2FC"]
+                            lfc_r = rr_row["log2FC"]
+                            direction = (
+                                "concordant_up" if (lfc_l > 0 and lfc_r > 0) else
+                                "concordant_down" if (lfc_l < 0 and lfc_r < 0) else
+                                "discordant"
+                            )
+                            rows.append({
+                                "arm": arm["arm"], "brain_age": br_age,
+                                "brain_level": br_level,
+                                "ligand": lg, "receptor": rg,
+                                "placenta_celltype": lr_row["celltype"],
+                                "brain_celltype": rr_row["celltype"],
+                                "placenta_log2FC": lfc_l,
+                                "brain_log2FC": lfc_r,
+                                "placenta_padj": lr_row["padj"],
+                                "brain_padj": rr_row["padj"],
+                                "placenta_stat": lr_row["stat"],
+                                "brain_stat": rr_row["stat"],
+                                "direction": direction,
+                                "stress_axis": (
+                                    "ligand+receptor"
+                                    if lg in STRESS_AXIS_GENES and rg in STRESS_AXIS_GENES
+                                    else "ligand"
+                                    if lg in STRESS_AXIS_GENES
+                                    else "receptor"
+                                    if rg in STRESS_AXIS_GENES
+                                    else ""
+                                ),
+                                "confound_note": confound,
+                            })
 
     if not rows:
         print("  No LR cross-tissue hypotheses found.")
@@ -717,49 +797,54 @@ def run_view5_tf_concordance(brain_tf, placenta_tf, args):
         return pd.DataFrame()
 
     rows = []
+    brain_levels = _brain_levels(brain_tf)
     for arm in ARMS:
-        pl_tf = prep_tf_df(placenta_tf, arm["placenta_contrast"], arm["placenta_age"])
+        pl_tf = prep_tf_df(placenta_tf, arm["placenta_contrast"], arm["placenta_age"],
+                           sex=args.sex, level="whole")
         if pl_tf.empty:
             continue
         for br_age in arm["brain_ages"]:
-            br_tf = prep_tf_df(brain_tf, arm["brain_contrast"], br_age)
-            if br_tf.empty:
-                continue
-            confound = arm["confound_flags"].get(br_age, "")
+            for br_level in brain_levels:
+                br_tf = prep_tf_df(brain_tf, arm["brain_contrast"], br_age,
+                                   sex=args.sex, level=br_level)
+                if br_tf.empty:
+                    continue
+                confound = arm["confound_flags"].get(br_age, "")
 
-            pl_sig = pl_tf[pl_tf["padj"] < args.pathway_fdr_cutoff].copy()
-            br_sig = br_tf[br_tf["padj"] < args.pathway_fdr_cutoff].copy()
-            if pl_sig.empty or br_sig.empty:
-                continue
+                pl_sig = pl_tf[pl_tf["padj"] < args.pathway_fdr_cutoff].copy()
+                br_sig = br_tf[br_tf["padj"] < args.pathway_fdr_cutoff].copy()
+                if pl_sig.empty or br_sig.empty:
+                    continue
 
-            for pl_ct, br_ct in product(pl_sig["celltype"].unique(),
-                                        br_sig["celltype"].unique()):
-                pl_ct_sig = pl_sig[pl_sig["celltype"] == pl_ct]
-                br_ct_sig = br_sig[br_sig["celltype"] == br_ct]
-                common_tfs = set(pl_ct_sig["TF"]) & set(br_ct_sig["TF"])
-                for tf_name in common_tfs:
-                    pl_row = pl_ct_sig[pl_ct_sig["TF"] == tf_name].iloc[0]
-                    br_row = br_ct_sig[br_ct_sig["TF"] == tf_name].iloc[0]
-                    sa = float(pl_row["activity_score"])
-                    sb = float(br_row["activity_score"])
-                    if sa > 0 and sb > 0:
-                        klass = "concordant_activated"
-                    elif sa < 0 and sb < 0:
-                        klass = "concordant_repressed"
-                    else:
-                        klass = "discordant"
-                    rows.append({
-                        "arm": arm["arm"], "brain_age": br_age,
-                        "placenta_celltype": pl_ct, "brain_celltype": br_ct,
-                        "TF": tf_name,
-                        "placenta_activity_score": sa,
-                        "brain_activity_score": sb,
-                        "placenta_padj": float(pl_row["padj"]),
-                        "brain_padj": float(br_row["padj"]),
-                        "concordance_class": klass,
-                        "stress_axis": "TF" if tf_name in STRESS_AXIS_GENES else "",
-                        "confound_note": confound,
-                    })
+                for pl_ct, br_ct in product(pl_sig["celltype"].unique(),
+                                            br_sig["celltype"].unique()):
+                    pl_ct_sig = pl_sig[pl_sig["celltype"] == pl_ct]
+                    br_ct_sig = br_sig[br_sig["celltype"] == br_ct]
+                    common_tfs = set(pl_ct_sig["TF"]) & set(br_ct_sig["TF"])
+                    for tf_name in common_tfs:
+                        pl_row = pl_ct_sig[pl_ct_sig["TF"] == tf_name].iloc[0]
+                        br_row = br_ct_sig[br_ct_sig["TF"] == tf_name].iloc[0]
+                        sa = float(pl_row["activity_score"])
+                        sb = float(br_row["activity_score"])
+                        if sa > 0 and sb > 0:
+                            klass = "concordant_activated"
+                        elif sa < 0 and sb < 0:
+                            klass = "concordant_repressed"
+                        else:
+                            klass = "discordant"
+                        rows.append({
+                            "arm": arm["arm"], "brain_age": br_age,
+                            "brain_level": br_level,
+                            "placenta_celltype": pl_ct, "brain_celltype": br_ct,
+                            "TF": tf_name,
+                            "placenta_activity_score": sa,
+                            "brain_activity_score": sb,
+                            "placenta_padj": float(pl_row["padj"]),
+                            "brain_padj": float(br_row["padj"]),
+                            "concordance_class": klass,
+                            "stress_axis": "TF" if tf_name in STRESS_AXIS_GENES else "",
+                            "confound_note": confound,
+                        })
 
     if not rows:
         print("  No TF concordances found.")
@@ -818,77 +903,82 @@ def run_view6_overlap_enrichment(brain_de, placenta_de, args):
 
     from statsmodels.stats.multitest import multipletests
     rows = []
+    brain_levels = _brain_levels(brain_de)
 
     for arm in ARMS:
-        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"])
+        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"],
+                           sex=args.sex, level="whole")
         if pl_de.empty:
             continue
         for br_age in arm["brain_ages"]:
-            br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age)
-            if br_de.empty:
-                continue
-            confound = arm["confound_flags"].get(br_age, "")
-
-            # Universe = genes tested in both tissues (any celltype)
-            universe = set(pl_de["gene"]) & set(br_de["gene"])
-            if len(universe) < 100:
-                continue
-            n_universe = len(universe)
-
-            # Build cross-tissue overlap gene sets, pooled across all celltype pairs
-            pl_sig = pl_de[(pl_de["padj"] < args.padj_cutoff) &
-                           (pl_de["log2FC"].abs() > args.logfc_cutoff)]
-            br_sig = br_de[(br_de["padj"] < args.padj_cutoff) &
-                           (br_de["log2FC"].abs() > args.logfc_cutoff)]
-
-            pl_up = set(pl_sig.loc[pl_sig["log2FC"] > 0, "gene"])
-            pl_dn = set(pl_sig.loc[pl_sig["log2FC"] < 0, "gene"])
-            br_up = set(br_sig.loc[br_sig["log2FC"] > 0, "gene"])
-            br_dn = set(br_sig.loc[br_sig["log2FC"] < 0, "gene"])
-
-            overlap_sets = {
-                "concordant_up": (pl_up & br_up) & universe,
-                "concordant_down": (pl_dn & br_dn) & universe,
-                "any_overlap": ((pl_up | pl_dn) & (br_up | br_dn)) & universe,
-            }
-
-            for direction, ovset in overlap_sets.items():
-                if len(ovset) < 5:
+            for br_level in brain_levels:
+                br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age,
+                                   sex=args.sex, level=br_level)
+                if br_de.empty:
                     continue
-                # ORA against each pathway: hypergeometric
-                slice_rows = []
-                for pw, pw_block in msig.groupby(["pathway", "collection"]):
-                    pathway_name, collection = pw
-                    pw_genes = set(pw_block["gene"]) & universe
-                    if len(pw_genes) < 5:
-                        continue
-                    overlap = ovset & pw_genes
-                    if len(overlap) == 0:
-                        continue
-                    p = float(hypergeom.sf(len(overlap) - 1, n_universe,
-                                            len(pw_genes), len(ovset)))
-                    slice_rows.append({
-                        "arm": arm["arm"], "brain_age": br_age,
-                        "direction": direction,
-                        "pathway": pathway_name, "collection": collection,
-                        "n_overlap": len(overlap),
-                        "n_pathway": len(pw_genes),
-                        "n_overlap_set": len(ovset),
-                        "n_universe": n_universe,
-                        "pvalue": p,
-                        "overlap_genes": ";".join(sorted(overlap)[:50]),
-                        "confound_note": confound,
-                    })
-                if not slice_rows:
+                confound = arm["confound_flags"].get(br_age, "")
+
+                # Universe = genes tested in both tissues (any celltype)
+                universe = set(pl_de["gene"]) & set(br_de["gene"])
+                if len(universe) < 100:
                     continue
-                slice_df = pd.DataFrame(slice_rows)
-                # BH-FDR within (arm, brain_age, direction, collection)
-                fdr_parts = []
-                for _, gg in slice_df.groupby("collection"):
-                    _, fdr, _, _ = multipletests(gg["pvalue"].fillna(1.0), method="fdr_bh")
-                    fdr_parts.append(pd.Series(fdr, index=gg.index))
-                slice_df["fdr"] = pd.concat(fdr_parts)
-                rows.extend(slice_df.to_dict("records"))
+                n_universe = len(universe)
+
+                # Build cross-tissue overlap gene sets, pooled across all celltype pairs
+                pl_sig = pl_de[(pl_de["padj"] < args.padj_cutoff) &
+                               (pl_de["log2FC"].abs() > args.logfc_cutoff)]
+                br_sig = br_de[(br_de["padj"] < args.padj_cutoff) &
+                               (br_de["log2FC"].abs() > args.logfc_cutoff)]
+
+                pl_up = set(pl_sig.loc[pl_sig["log2FC"] > 0, "gene"])
+                pl_dn = set(pl_sig.loc[pl_sig["log2FC"] < 0, "gene"])
+                br_up = set(br_sig.loc[br_sig["log2FC"] > 0, "gene"])
+                br_dn = set(br_sig.loc[br_sig["log2FC"] < 0, "gene"])
+
+                overlap_sets = {
+                    "concordant_up": (pl_up & br_up) & universe,
+                    "concordant_down": (pl_dn & br_dn) & universe,
+                    "any_overlap": ((pl_up | pl_dn) & (br_up | br_dn)) & universe,
+                }
+
+                for direction, ovset in overlap_sets.items():
+                    if len(ovset) < 5:
+                        continue
+                    # ORA against each pathway: hypergeometric
+                    slice_rows = []
+                    for pw, pw_block in msig.groupby(["pathway", "collection"]):
+                        pathway_name, collection = pw
+                        pw_genes = set(pw_block["gene"]) & universe
+                        if len(pw_genes) < 5:
+                            continue
+                        overlap = ovset & pw_genes
+                        if len(overlap) == 0:
+                            continue
+                        p = float(hypergeom.sf(len(overlap) - 1, n_universe,
+                                                len(pw_genes), len(ovset)))
+                        slice_rows.append({
+                            "arm": arm["arm"], "brain_age": br_age,
+                            "brain_level": br_level,
+                            "direction": direction,
+                            "pathway": pathway_name, "collection": collection,
+                            "n_overlap": len(overlap),
+                            "n_pathway": len(pw_genes),
+                            "n_overlap_set": len(ovset),
+                            "n_universe": n_universe,
+                            "pvalue": p,
+                            "overlap_genes": ";".join(sorted(overlap)[:50]),
+                            "confound_note": confound,
+                        })
+                    if not slice_rows:
+                        continue
+                    slice_df = pd.DataFrame(slice_rows)
+                    # BH-FDR within (arm, brain_age, brain_level, direction, collection)
+                    fdr_parts = []
+                    for _, gg in slice_df.groupby("collection"):
+                        _, fdr, _, _ = multipletests(gg["pvalue"].fillna(1.0), method="fdr_bh")
+                        fdr_parts.append(pd.Series(fdr, index=gg.index))
+                    slice_df["fdr"] = pd.concat(fdr_parts)
+                    rows.extend(slice_df.to_dict("records"))
 
     if not rows:
         print("  No overlap enrichments produced.")
@@ -909,6 +999,16 @@ def _save_fig(fig, path):
     print(f"  Plot: {path.name}")
 
 
+def _quantile_floor(values, q):
+    """Slice-specific adaptive plot floor (mirrors 8e). Given a 1-D array/Series
+    of effect magnitudes for ONE plot's slice, return the threshold = q-quantile.
+    Items >= threshold are kept. Returns -inf (keep all) when too few to rank."""
+    v = pd.Series(values).dropna()
+    if len(v) < 4:
+        return float("-inf")
+    return float(v.quantile(q))
+
+
 def plot_overview_overlap(deg_df, plots_root):
     """One heatmap per arm: brain_age × concordant_overlap_score.
     Score = max -log10(p) across all ct pairs for direction='any_overlap'."""
@@ -922,10 +1022,12 @@ def plot_overview_overlap(deg_df, plots_root):
 
     for arm in sub["arm"].unique():
         arm_df = sub[sub["arm"] == arm]
-        pivot = (arm_df.groupby(["placenta_celltype", "brain_celltype", "brain_age"])
+        pivot = (arm_df.groupby(["placenta_celltype", "brain_celltype",
+                                 "brain_age", "brain_level"])
                  ["neg_log10_p"].max().reset_index())
-        for br_age in arm_df["brain_age"].unique():
-            slice_df = pivot[pivot["brain_age"] == br_age]
+        for br_age, br_level in pivot[["brain_age", "brain_level"]].drop_duplicates().itertuples(index=False):
+            slice_df = pivot[(pivot["brain_age"] == br_age) &
+                             (pivot["brain_level"] == br_level)]
             if slice_df.empty:
                 continue
             mat = (slice_df.pivot(index="placenta_celltype",
@@ -944,16 +1046,16 @@ def plot_overview_overlap(deg_df, plots_root):
             ax.set_yticklabels(mat.index, fontsize=8)
             ax.set_xlabel("Brain celltype")
             ax.set_ylabel("Placenta celltype")
-            ax.set_title(f"DEG overlap: {arm} arm → brain {br_age}", fontsize=10)
-            _save_fig(fig, pdir / f"overlap_overview_{arm}_{_slug(br_age)}.png")
+            ax.set_title(f"DEG overlap: {arm} arm → brain {br_age} [{br_level}]", fontsize=10)
+            _save_fig(fig, pdir / f"overlap_overview_{arm}_{_slug(br_age)}_{_slug(br_level)}.png")
 
 
 def plot_deg_overlap_per_pair(deg_df, plots_root, top_n_label):
     """Per arm×brain_age, a 4-panel heatmap (one per direction)."""
     if deg_df.empty:
         return
-    for (arm, br_age), grp in deg_df.groupby(["arm", "brain_age"]):
-        pdir = plots_root / f"02_deg_overlap/{arm}_{_slug(br_age)}"
+    for (arm, br_age, br_level), grp in deg_df.groupby(["arm", "brain_age", "brain_level"]):
+        pdir = plots_root / f"02_deg_overlap/{arm}_{_slug(br_age)}/{_slug(br_level)}"
         pdir.mkdir(parents=True, exist_ok=True)
         directions = ["concordant_up", "concordant_down",
                       "discordant_pl_up_br_dn", "any_overlap"]
@@ -984,17 +1086,18 @@ def plot_deg_overlap_per_pair(deg_df, plots_root, top_n_label):
             ax.set_yticklabels(mat.index, fontsize=8)
             ax.set_xlabel("Brain celltype")
             ax.set_ylabel("Placenta celltype")
-            ax.set_title(f"{direction}  |  {arm} arm → brain {br_age}\n"
+            ax.set_title(f"{direction}  |  {arm} arm → brain {br_age} [{br_level}]\n"
                          f"(* = FDR<0.05)", fontsize=9)
             _save_fig(fig, pdir / f"deg_overlap_{direction}.png")
 
 
-def plot_pathway_concordance(pw_df, plots_root, top_n_label):
-    """Dotplot: pathway × ct_pair, color = direction, size = combined significance."""
+def plot_pathway_concordance(pw_df, plots_root, top_n_label, plot_q=0.75):
+    """Dotplot: pathway × ct_pair, color = direction, size = combined significance.
+    ct_pair columns quantile-floored within slice (by max sig_score) + top_n backstop."""
     if pw_df.empty:
         return
-    for (arm, br_age), grp in pw_df.groupby(["arm", "brain_age"]):
-        pdir = plots_root / f"04_pathway_concordance/{arm}_{_slug(br_age)}"
+    for (arm, br_age, br_level), grp in pw_df.groupby(["arm", "brain_age", "brain_level"]):
+        pdir = plots_root / f"04_pathway_concordance/{arm}_{_slug(br_age)}/{_slug(br_level)}"
         pdir.mkdir(parents=True, exist_ok=True)
 
         # Top pathways by concordance abundance
@@ -1013,6 +1116,15 @@ def plot_pathway_concordance(pw_df, plots_root, top_n_label):
 
         if sub.empty:
             continue
+        # Plot-only cap: keep ct_pair columns whose max sig_score >= q-quantile within
+        # this slice, then top_n_label backstop. Full set stays in the CSV.
+        ct_rank = (sub.groupby("ct_pair")["sig_score"].max()
+                   .sort_values(ascending=False))
+        n_ct_total = len(ct_rank)
+        thr = _quantile_floor(ct_rank, plot_q)
+        keep_ct = ct_rank[ct_rank >= thr].head(top_n_label).index.tolist()
+        sub = sub[sub["ct_pair"].isin(keep_ct)]
+        n_ct_hidden = n_ct_total - len(keep_ct)
         ct_pairs = sorted(sub["ct_pair"].unique())
         pw_list = top_pw
         ct_idx = {c: i for i, c in enumerate(ct_pairs)}
@@ -1031,16 +1143,17 @@ def plot_pathway_concordance(pw_df, plots_root, top_n_label):
         from matplotlib.patches import Patch
         ax.legend(handles=[Patch(color=v, label=k) for k, v in color_map.items()],
                   fontsize=7, loc="best")
-        ax.set_title(f"Pathway concordance — {arm} arm → brain {br_age}\n"
-                     f"top {len(pw_list)} pathways concordant across ct_pairs",
+        ct_note = f"; {n_ct_hidden} more ct_pairs in CSV" if n_ct_hidden else ""
+        ax.set_title(f"Pathway concordance — {arm} arm → brain {br_age} [{br_level}]\n"
+                     f"top {len(pw_list)} pathways × top {len(ct_pairs)} ct_pairs{ct_note}",
                      fontsize=9)
         _save_fig(fig, pdir / "pathway_concordance.png")
 
 
-def plot_lr_cross_tissue(lr_df, plots_root, top_n_label):
-    """Two plots per arm × brain_age:
-       1. Scatter: x=placenta_log2FC, y=brain_log2FC, colour=direction
-       2. Top concordant LR table as horizontal bar chart of |placenta_log2FC * brain_log2FC|
+def plot_lr_cross_tissue(lr_df, plots_root, top_n_label, plot_q=0.75):
+    """Per arm × brain_age × brain_level:
+       1. Scatter (ALL matched pairs — distribution plot, never floored; labels capped)
+       2. Top concordant LR bar — quantile-floored within slice + top_n_label backstop
     """
     if lr_df.empty:
         return
@@ -1048,24 +1161,26 @@ def plot_lr_cross_tissue(lr_df, plots_root, top_n_label):
     color_map = {"concordant_up": "#d73027", "concordant_down": "#4575b4",
                  "discordant": "#fdae61"}
 
-    for (arm, br_age), grp in lr_df.groupby(["arm", "brain_age"]):
-        pdir = plots_root / f"05_lr_cross_tissue/{arm}_{_slug(br_age)}"
+    for (arm, br_age, br_level), grp in lr_df.groupby(["arm", "brain_age", "brain_level"]):
+        pdir = plots_root / f"05_lr_cross_tissue/{arm}_{_slug(br_age)}/{_slug(br_level)}"
         pdir.mkdir(parents=True, exist_ok=True)
         grp = grp.copy()
         grp["color"] = grp["direction"].map(color_map).fillna("lightgray")
 
-        # ---- 1. Scatter ----
+        # ---- 1. Scatter (distribution plot: ALL matched pairs, per 8e principle) ----
+        grp["prod"] = grp["placenta_log2FC"].abs() * grp["brain_log2FC"].abs()
+        draw = grp
+
         fig, ax = plt.subplots(figsize=(7, 6))
         ax.axhline(0, color="k", lw=0.5, alpha=0.4)
         ax.axvline(0, color="k", lw=0.5, alpha=0.4)
-        lim = float(max(grp[["placenta_log2FC", "brain_log2FC"]].abs().max().max(), 1))
+        lim = float(max(draw[["placenta_log2FC", "brain_log2FC"]].abs().max().max(), 1))
         ax.plot([-lim, lim], [-lim, lim], "k--", lw=0.5, alpha=0.3)
-        ax.scatter(grp["placenta_log2FC"], grp["brain_log2FC"],
-                   c=grp["color"], s=40, alpha=0.7,
+        ax.scatter(draw["placenta_log2FC"], draw["brain_log2FC"],
+                   c=draw["color"], s=40, alpha=0.7,
                    edgecolors="k", linewidths=0.3)
-        # Label top by product of |lfc| — privileges genes deregulated in both
-        grp["prod"] = grp["placenta_log2FC"].abs() * grp["brain_log2FC"].abs()
-        for _, r in grp.nlargest(top_n_label, "prod").iterrows():
+        # Labels (not points) are capped — privilege pairs deregulated strongly in both
+        for _, r in draw.nlargest(top_n_label, "prod").iterrows():
             stress_marker = " ★" if r.get("stress_axis", "") else ""
             ax.annotate(
                 f"{r['ligand']}→{r['receptor']}{stress_marker}\n"
@@ -1081,16 +1196,19 @@ def plot_lr_cross_tissue(lr_df, plots_root, top_n_label):
         handles.append(Patch(color="white", label="★ touches stress axis",
                               ec="black"))
         ax.legend(handles=handles, fontsize=7)
-        ax.set_title(f"LR cross-tissue mechanism — {arm} arm → brain {br_age}\n"
-                     f"(top {top_n_label} labelled by |L log2FC × R log2FC|)",
-                     fontsize=9)
+        ax.set_title(f"LR cross-tissue mechanism — {arm} arm → brain {br_age} [{br_level}]\n"
+                     f"(all {len(draw):,} matched pairs; top {top_n_label} labelled "
+                     f"by |L log2FC × R log2FC|)", fontsize=9)
         _save_fig(fig, pdir / "lr_cross_tissue_scatter.png")
 
-        # ---- 2. Top concordant bar chart ----
+        # ---- 2. Top concordant bar chart (quantile-floored within slice) ----
         concord = grp[grp["direction"].isin(["concordant_up", "concordant_down"])]
         if concord.empty:
             continue
-        top = concord.nlargest(top_n_label, "prod").copy()
+        thr = _quantile_floor(concord["prod"], plot_q)
+        kept = concord[concord["prod"] >= thr]
+        top = kept.nlargest(top_n_label, "prod").copy()
+        n_more = len(concord) - len(top)
         top["label"] = (
             top["ligand"] + "→" + top["receptor"]
             + top.get("stress_axis", pd.Series("", index=top.index))
@@ -1103,9 +1221,9 @@ def plot_lr_cross_tissue(lr_df, plots_root, top_n_label):
         ax.set_yticklabels(top["label"].values, fontsize=7)
         ax.invert_yaxis()
         ax.set_xlabel("|Placenta log2FC × Brain log2FC|")
-        ax.set_title(f"Top concordant LR mechanisms — {arm} arm → brain {br_age}\n"
-                     f"(★ = ligand or receptor in curated stress axis list)",
-                     fontsize=9)
+        ax.set_title(f"Top concordant LR mechanisms — {arm} arm → brain {br_age} [{br_level}]\n"
+                     f"(q≥{plot_q} floor; {n_more} more concordant pairs in CSV; "
+                     f"★ = ligand/receptor in stress axis)", fontsize=9)
         _save_fig(fig, pdir / "lr_cross_tissue_top_concordant.png")
 
 
@@ -1115,71 +1233,75 @@ def plot_overlap_effect_size_scatter(brain_de, placenta_de, args, plots_root):
     relationship. Coloured by directional concordance, top genes labelled.
     One plot per arm × brain_age (pooled across celltype pairs)."""
     print("\n[Plots] Effect-size scatters (DEG overlap)")
+    brain_levels = _brain_levels(brain_de)
     for arm in ARMS:
-        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"])
+        pl_de = prep_de_df(placenta_de, arm["placenta_contrast"], arm["placenta_age"],
+                           sex=args.sex, level="whole")
         if pl_de.empty:
             continue
         for br_age in arm["brain_ages"]:
-            br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age)
-            if br_de.empty:
-                continue
+            for br_level in brain_levels:
+                br_de = prep_de_df(brain_de, arm["brain_contrast"], br_age,
+                                   sex=args.sex, level=br_level)
+                if br_de.empty:
+                    continue
 
-            # Aggregate to gene-level: take the strongest |log2FC| per gene
-            # across celltypes (a gene's "tissue-level" effect).
-            def _gene_max(df):
-                return (df.assign(abs_lfc=df["log2FC"].abs())
-                        .sort_values("abs_lfc", ascending=False)
-                        .drop_duplicates("gene")[["gene", "log2FC", "padj"]])
-            pl_g = _gene_max(pl_de).set_index("gene")
-            br_g = _gene_max(br_de).set_index("gene")
-            common = pl_g.index.intersection(br_g.index)
-            if len(common) < 20:
-                continue
-            pl_g = pl_g.loc[common].rename(columns=lambda c: "placenta_" + c)
-            br_g = br_g.loc[common].rename(columns=lambda c: "brain_" + c)
-            merged = pl_g.join(br_g)
-            # Only label genes DE in at least one tissue
-            merged["sig_either"] = (
-                (merged["placenta_padj"] < args.padj_cutoff) |
-                (merged["brain_padj"] < args.padj_cutoff)
-            )
-            sig = merged[merged["sig_either"]]
-            if len(sig) < 5:
-                continue
+                # Aggregate to gene-level: take the strongest |log2FC| per gene
+                # across celltypes (a gene's "tissue-level" effect).
+                def _gene_max(df):
+                    return (df.assign(abs_lfc=df["log2FC"].abs())
+                            .sort_values("abs_lfc", ascending=False)
+                            .drop_duplicates("gene")[["gene", "log2FC", "padj"]])
+                pl_g = _gene_max(pl_de).set_index("gene")
+                br_g = _gene_max(br_de).set_index("gene")
+                common = pl_g.index.intersection(br_g.index)
+                if len(common) < 20:
+                    continue
+                pl_g = pl_g.loc[common].rename(columns=lambda c: "placenta_" + c)
+                br_g = br_g.loc[common].rename(columns=lambda c: "brain_" + c)
+                merged = pl_g.join(br_g)
+                # Only label genes DE in at least one tissue
+                merged["sig_either"] = (
+                    (merged["placenta_padj"] < args.padj_cutoff) |
+                    (merged["brain_padj"] < args.padj_cutoff)
+                )
+                sig = merged[merged["sig_either"]]
+                if len(sig) < 5:
+                    continue
 
-            rho, rho_p = spearmanr(sig["placenta_log2FC"], sig["brain_log2FC"])
+                rho, rho_p = spearmanr(sig["placenta_log2FC"], sig["brain_log2FC"])
 
-            def _col(row):
-                pl, br = row["placenta_log2FC"], row["brain_log2FC"]
-                if pl > 0 and br > 0: return "#d73027"
-                if pl < 0 and br < 0: return "#4575b4"
-                return "#fdae61"
-            sig = sig.copy()
-            sig["color"] = sig.apply(_col, axis=1)
+                def _col(row):
+                    pl, br = row["placenta_log2FC"], row["brain_log2FC"]
+                    if pl > 0 and br > 0: return "#d73027"
+                    if pl < 0 and br < 0: return "#4575b4"
+                    return "#fdae61"
+                sig = sig.copy()
+                sig["color"] = sig.apply(_col, axis=1)
 
-            fig, ax = plt.subplots(figsize=(7, 6))
-            ax.axhline(0, color="k", lw=0.5, alpha=0.4)
-            ax.axvline(0, color="k", lw=0.5, alpha=0.4)
-            lim = float(max(sig[["placenta_log2FC", "brain_log2FC"]].abs().max().max(), 1))
-            ax.plot([-lim, lim], [-lim, lim], "k--", lw=0.5, alpha=0.3)
-            ax.scatter(sig["placenta_log2FC"], sig["brain_log2FC"],
-                       c=sig["color"], s=22, alpha=0.7, edgecolors="k", linewidths=0.2)
-            # Label top by product of |logFC|
-            sig["prod"] = sig["placenta_log2FC"].abs() * sig["brain_log2FC"].abs()
-            top = sig.nlargest(args.top_n_label, "prod")
-            for gene, r in top.iterrows():
-                ax.annotate(gene, (r["placenta_log2FC"], r["brain_log2FC"]),
-                            fontsize=6, ha="center", va="bottom",
-                            xytext=(0, 3), textcoords="offset points",
-                            arrowprops=dict(arrowstyle="-", color="gray", lw=0.3))
-            ax.set_xlabel("Placenta log2FC (per-gene max |log2FC| across celltypes)")
-            ax.set_ylabel("Brain log2FC (per-gene max |log2FC| across celltypes)")
-            ax.set_title(
-                f"DEG effect-size concordance — {arm['arm']} arm → brain {br_age}\n"
-                f"Spearman ρ = {rho:.2f} (p={rho_p:.1e}; n={len(sig):,} genes DE in either)",
-                fontsize=9)
-            pdir = plots_root / f"02_deg_overlap/{arm['arm']}_{_slug(br_age)}"
-            _save_fig(fig, pdir / "effect_size_scatter.png")
+                fig, ax = plt.subplots(figsize=(7, 6))
+                ax.axhline(0, color="k", lw=0.5, alpha=0.4)
+                ax.axvline(0, color="k", lw=0.5, alpha=0.4)
+                lim = float(max(sig[["placenta_log2FC", "brain_log2FC"]].abs().max().max(), 1))
+                ax.plot([-lim, lim], [-lim, lim], "k--", lw=0.5, alpha=0.3)
+                ax.scatter(sig["placenta_log2FC"], sig["brain_log2FC"],
+                           c=sig["color"], s=22, alpha=0.7, edgecolors="k", linewidths=0.2)
+                # Label top by product of |logFC|
+                sig["prod"] = sig["placenta_log2FC"].abs() * sig["brain_log2FC"].abs()
+                top = sig.nlargest(args.top_n_label, "prod")
+                for gene, r in top.iterrows():
+                    ax.annotate(gene, (r["placenta_log2FC"], r["brain_log2FC"]),
+                                fontsize=6, ha="center", va="bottom",
+                                xytext=(0, 3), textcoords="offset points",
+                                arrowprops=dict(arrowstyle="-", color="gray", lw=0.3))
+                ax.set_xlabel("Placenta log2FC (per-gene max |log2FC| across celltypes)")
+                ax.set_ylabel("Brain log2FC (per-gene max |log2FC| across celltypes)")
+                ax.set_title(
+                    f"DEG effect-size concordance — {arm['arm']} arm → brain {br_age} [{br_level}]\n"
+                    f"Spearman ρ = {rho:.2f} (p={rho_p:.1e}; n={len(sig):,} genes DE in either)",
+                    fontsize=9)
+                pdir = plots_root / f"02_deg_overlap/{arm['arm']}_{_slug(br_age)}/{_slug(br_level)}"
+                _save_fig(fig, pdir / "effect_size_scatter.png")
 
 
 def plot_pathway_concordance_scatter(pw_df, plots_root, top_n_label):
@@ -1188,7 +1310,7 @@ def plot_pathway_concordance_scatter(pw_df, plots_root, top_n_label):
     if pw_df.empty:
         return
     print("\n[Plots] Effect-size scatters (pathway concordance)")
-    for (arm, br_age), grp in pw_df.groupby(["arm", "brain_age"]):
+    for (arm, br_age, br_level), grp in pw_df.groupby(["arm", "brain_age", "brain_level"]):
         # Aggregate: pathway-level mean NES across celltype pairs in this slice
         agg = (grp.groupby("pathway")
                .agg(placenta_NES=("placenta_NES", "mean"),
@@ -1224,23 +1346,24 @@ def plot_pathway_concordance_scatter(pw_df, plots_root, top_n_label):
         ax.set_xlabel("Placenta NES (mean across ct_pairs)")
         ax.set_ylabel("Brain NES (mean across ct_pairs)")
         ax.set_title(
-            f"Pathway NES concordance — {arm} arm → brain {br_age}\n"
+            f"Pathway NES concordance — {arm} arm → brain {br_age} [{br_level}]\n"
             f"Spearman ρ = {rho:.2f} (p={rho_p:.1e}; n={len(agg):,} pathways)",
             fontsize=9)
-        pdir = plots_root / f"04_pathway_concordance/{arm}_{_slug(br_age)}"
+        pdir = plots_root / f"04_pathway_concordance/{arm}_{_slug(br_age)}/{_slug(br_level)}"
         _save_fig(fig, pdir / "pathway_nes_scatter.png")
 
 
-def plot_tf_concordance(tf_df, plots_root, top_n_label):
-    """Dotplot of concordant TFs per arm × brain_age, plus per-pair NES scatter."""
+def plot_tf_concordance(tf_df, plots_root, top_n_label, plot_q=0.75):
+    """Dotplot of concordant TFs per arm × brain_age × brain_level, plus per-pair
+    activity scatter. ct_pair columns quantile-floored within slice + top_n backstop."""
     if tf_df.empty:
         return
     print("\n[Plots] TF concordance")
     color_map = {"concordant_activated": "#d73027",
                  "concordant_repressed": "#4575b4",
                  "discordant": "#fdae61"}
-    for (arm, br_age), grp in tf_df.groupby(["arm", "brain_age"]):
-        pdir = plots_root / f"06_tf_concordance/{arm}_{_slug(br_age)}"
+    for (arm, br_age, br_level), grp in tf_df.groupby(["arm", "brain_age", "brain_level"]):
+        pdir = plots_root / f"06_tf_concordance/{arm}_{_slug(br_age)}/{_slug(br_level)}"
 
         # 1. Dotplot: TF × ct_pair, colour = class
         sub = grp.copy()
@@ -1254,6 +1377,16 @@ def plot_tf_concordance(tf_df, plots_root, top_n_label):
         sub["sig_score"] = -np.log10(sub["placenta_padj"].clip(lower=1e-300)) \
                            - np.log10(sub["brain_padj"].clip(lower=1e-300))
         sub["color"] = sub["concordance_class"].map(color_map).fillna("lightgray")
+
+        # Plot-only cap: keep ct_pair columns whose max sig_score >= q-quantile within
+        # this slice, then top_n_label backstop. Full set stays in the CSV.
+        ct_rank = (sub.groupby("ct_pair")["sig_score"].max()
+                   .sort_values(ascending=False))
+        n_ct_total = len(ct_rank)
+        thr = _quantile_floor(ct_rank, plot_q)
+        keep_ct = ct_rank[ct_rank >= thr].head(top_n_label).index.tolist()
+        sub = sub[sub["ct_pair"].isin(keep_ct)]
+        n_ct_hidden = n_ct_total - len(keep_ct)
 
         ct_pairs = sorted(sub["ct_pair"].unique())
         tf_list = top_tfs
@@ -1272,8 +1405,9 @@ def plot_tf_concordance(tf_df, plots_root, top_n_label):
         from matplotlib.patches import Patch
         ax.legend(handles=[Patch(color=v, label=k) for k, v in color_map.items()],
                   fontsize=7, loc="best")
-        ax.set_title(f"TF concordance — {arm} arm → brain {br_age}\n"
-                     f"top {len(tf_list)} concordant TFs across cell-type pairs",
+        ct_note = f"; {n_ct_hidden} more ct_pairs in CSV" if n_ct_hidden else ""
+        ax.set_title(f"TF concordance — {arm} arm → brain {br_age} [{br_level}]\n"
+                     f"top {len(tf_list)} TFs × top {len(ct_pairs)} ct_pairs{ct_note}",
                      fontsize=9)
         _save_fig(fig, pdir / "tf_concordance_dotplot.png")
 
@@ -1322,7 +1456,8 @@ def plot_overlap_enrichment(enr_df, plots_root, top_n_label):
     if enr_df.empty:
         return
     print("\n[Plots] Overlap-gene-set enrichment")
-    for (arm, br_age, direction), grp in enr_df.groupby(["arm", "brain_age", "direction"]):
+    for (arm, br_age, br_level, direction), grp in enr_df.groupby(
+            ["arm", "brain_age", "brain_level", "direction"]):
         sig = grp[grp["fdr"] < 0.05]
         # If nothing FDR-significant in this slice, still draw top-by-p so smoke-test
         # has output to inspect (annotate that nothing was significant).
@@ -1355,9 +1490,9 @@ def plot_overlap_enrichment(enr_df, plots_root, top_n_label):
                   fontsize=7, loc="best")
         ax.set_title(
             f"Pathways enriched in {direction} cross-tissue DEGs{sig_marker}\n"
-            f"{arm} arm → brain {br_age}  "
+            f"{arm} arm → brain {br_age} [{br_level}]  "
             f"(annot = n_overlap / n_pathway_genes)", fontsize=9)
-        pdir = plots_root / f"07_overlap_enrichment/{arm}_{_slug(br_age)}"
+        pdir = plots_root / f"07_overlap_enrichment/{arm}_{_slug(br_age)}/{_slug(br_level)}"
         _save_fig(fig, pdir / f"enrichment_{direction}.png")
 
 
@@ -1458,10 +1593,10 @@ def main():
     plot_overview_overlap(deg_df, pdir_root)
     plot_deg_overlap_per_pair(deg_df, pdir_root, args.top_n_label)
     plot_overlap_effect_size_scatter(brain_de, placenta_de, args, pdir_root)
-    plot_pathway_concordance(pw_df, pdir_root, args.top_n_label)
+    plot_pathway_concordance(pw_df, pdir_root, args.top_n_label, plot_q=args.plot_quantile)
     plot_pathway_concordance_scatter(pw_df, pdir_root, args.top_n_label)
-    plot_lr_cross_tissue(lr_df, pdir_root, args.top_n_label)
-    plot_tf_concordance(tf_df, pdir_root, args.top_n_label)
+    plot_lr_cross_tissue(lr_df, pdir_root, args.top_n_label, plot_q=args.plot_quantile)
+    plot_tf_concordance(tf_df, pdir_root, args.top_n_label, plot_q=args.plot_quantile)
     plot_overlap_enrichment(enr_df, pdir_root, args.top_n_label)
 
     # ---- Summary ----

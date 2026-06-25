@@ -45,6 +45,9 @@ subprocess per item is a performance bug — treat it like any other bug.
 - **CPU-bound exception:** the shuffle null in `08b_disruption_shuffle_test.py` uses
   `use_threads=False` (process pool) — numpy permutation loops are CPU-bound pure Python
   and the GIL would serialize threads. The worker is a top-level function for picklability.
+- **Plotting note (8e):** the 8e summary plotting is intentionally SERIAL (matplotlib/pyplot
+  is not thread-safe and the plot fns share module-level state). Brain regional plotting is
+  the long pole (~hours); accept it or process-parallelize a deferred job list later.
 
 ## Pipeline architecture decisions (don't re-litigate)
 - **Language:** Python primary (Scanpy/scvi-tools). R subprocess for scDblFinder, propeller, SoupX.
@@ -185,7 +188,7 @@ sed -i "s/multi_class = 'ovr', //;s/multi_class = 'ovr'//" \
 **Cross-cutting (8a done; 8b–8g follow the same — wire via the shared helpers):**
 - **Statistical unit is the animal (donor_id), never the cell.** Composition = per-donor cell-type counts; DE = pseudobulk (sum raw counts per donor). No dam ID → each pup independent (anti-conservative; caveat carried in `flag`).
 - **Contrasts are declarative** (`config … contrasts:`, via `_utils.load_contrasts(cfg, kind="de")`) and shared across every 8x stage — never hard-code or synthesize a contrast in a phase script. The set: `early_vs_relaxed_per_age`, `late_vs_relaxed_per_age`, `omnibus_3group_per_age`, `early_vs_late_per_age` (brain only — it lives in the YAML), `within_group_across_age` (DE-only), `group_x_age_interaction` (DE-only). A phase consumes the contrasts it can handle and skips the rest with an announcement (8a skips across-age / interaction / sex-stratified contrasts).
-- **Sex strata are declarative** (`config … strata: {sex: [combined, M, F]}`, via `_utils.iter_strata`). Applied to EVERY contrast in EVERY stage; `combined` = sex stays a covariate, `M`/`F` = subset the donors (sex then auto-drops from the design). Every output row/path carries a `sex` column. This SUPERSEDES the old `within_age_sex_stratified` contrast — remove that from `build_yaml.py` as part of wiring 8b. A stratum/group with only 1 donor is unavoidably skipped (e.g. P1 Relaxed females).
+- **Sex strata are declarative** (`config … strata: {sex: [combined, M, F]}`, via `_utils.iter_strata`). Applied to EVERY contrast in EVERY stage; `combined` = sex stays a covariate, `M`/`F` = subset the donors (sex then auto-drops from the design). Every output row/path carries a `sex` column. This SUPERSEDES the old `within_age_sex_stratified` contrast — remove that from `build_yaml.py` as part of wiring 8b. A stratum/group with only 1 donor is unavoidably skipped (e.g. P1 Relaxed females). **(8e is the one exception — combined-only; see §"Phase 8e plotting".)**
 - **Drop, don't reassign, non-cell-types** — from numerator AND denominator, once up front: contaminants (`subcluster_name` starting `Contamination_` or `=="unresolved"`, from the 08c subcluster objects) and `unassigned*` gate labels (`_utils.unassigned_mask`). Record the dropped per-donor counts/fractions in a diagnostic CSV (`08a_dropped_cells_per_donor.csv` pattern) — never lose them silently. Plots show ONLY real, assigned cell types; the dropped mass lives in the diagnostic table.
 - **Design `~ sex + pool + group`; drop any covariate that is constant OR perfectly aliased with `group` in a slice, and flag `confounded_with_pool`.** Canonical case: P1 `Late_Stress` is Pool3-only → pool ≡ group → rank-deficient → drop `pool`. Use the `aliased_with(df, factor, cov)` pattern from 8a. scVI batch correction does NOT touch count-level tests, so `pool` stays in the design wherever it's estimable.
 - **`min_donors=2` to run a stratum; any group `<3` → `reliability=low_n`** (`config … composition: {min_donors: 2, reliable_donors: 3}`). Trust `ok` rows with a finite effect; `low_n` rows with NaN/inf effect are degenerate (a rare type absent in a tiny group) and inflate the raw FDR<0.05 count — read `reliability==ok` + finite effect for real hits.
@@ -199,7 +202,7 @@ sed -i "s/multi_class = 'ovr', //;s/multi_class = 'ovr'//" \
 - **Subcluster runs are a LOOP, not one cell type.** Production runs every focal cell type through 8b, 8c, and 8e via the same `CELL_TYPES` array defined once in run_pipeline*.sh.
 - **Subcluster naming (7d)**: 7b produces INTEGER subcluster ids; 7d names them via CellTypist majority_voting + literature-marker scoring from `config/subcluster_markers.yaml`, aggregated per cluster (mean score → argmax).
 - **TF activity (8c) = REQUIRED in production**: ULM on DE Wald stats vs CollecTRI mouse network, per contrast×celltype, BH-FDR within celltype×contrast. Always pass `--tf`. Gates 8f view 5 and 8g view 3; cannot be recovered without re-running 8c. Needs network (omnipath).
-- **8e cell-cell communication = LIANA+ in main env, no sidecar.** Three arms in one script: baseline `rank_aggregate` per group×age, differential via `li.multi.df_to_lr` reading 8b's Wald stats, per-donor for statistics. Covers all three group comparisons (ES-v-Rel, LS-v-Rel, ES-v-LS).
+- **8e cell-cell communication = LIANA+ in main env, no sidecar.** Three arms in one script: baseline `rank_aggregate` per group×age, differential via `li.multi.df_to_lr` reading 8b's Wald stats, per-donor for statistics. Covers all three group comparisons (ES-v-Rel, LS-v-Rel, ES-v-LS). **Compute script is `08e_comms.py` (NOT `08e_communication.py`); plotting is `08e_comms_summary.py`. See §"Phase 8e plotting" for the full plotting spec.**
 - **8f cross-tissue = six views, all reproducible from 8b/8c CSVs.** Two biologically aligned arms (E12.5 placenta Early → P1/4W/3mo brain Early; E18.5 placenta Late → same; P1 Late carries `confounded_with_pool` flag). Views: DEG overlap (hypergeom), RRHO (custom NumPy), pathway concordance from 8c GSEA, LR cross-tissue mechanistic hypotheses (placental ligand × brain receptor from liana mouseconsensus with `stress_axis` flag column), TF concordance from 8c TF activity, ORA of overlap genes vs MSigDB. The LR table is the publication-quality output. **8f must use the shared `contrast_family` resolver (see §"Phase 8c summary plots") — placenta and brain name contrasts differently.**
 - **NO cross-tissue cell-cell communication.** BBB makes literal placenta-cell-to-brain-cell signalling implausible — 8f view 4 (LR from DE) is the correctly framed endocrine/paracrine version.
 - **8g cross-age persistence = brain only.** Placenta has incomplete cross-age factorial; 8g exits cleanly with `tissue: placenta`. Persistence classes: persistent, resolving_early, established_late, P1_only, transient_4W, emergent_3mo, P1_3mo_only, persistent_directionswap. Cross-arm core signature (view 6) = intersection of persistent calls in BOTH arms with consistent direction = paper-quality table.
@@ -243,10 +246,57 @@ Methods caveat to include in paper: `within_group_across_age` is pool-confounded
 
 - **M8 dropped from ALL plots.** Tabula-Muris-Senis / Descartes / Zhang-uterus etc. are cell-IDENTITY signatures, not pathways — noise that rode along in the default msigdbr MH/M2/M5/M8 export. One global filter at load: `gsea = gsea[gsea["collection"].isin(["MH","M2","M5"])]`. This is the authoritative "what we plot" gate; it propagates to EVERY plot (the panels loop `COLLECTIONS`, but ridges/concordance/localization grid/trajectory/leading-edge select pathways from the dataframe, so only a load-time filter catches all of them). M8 stays in the CSV + the per-cell AUCell h5ad (harmless — never selected). Strip from compute only if 8c is ever re-run from scratch.
 - **Per-cell UMAPs replaced by a per-cell-type pathway-localization grid.** One figure per tissue: a grid of mini-UMAPs, one panel per major cell type, coloured by THAT cell type's top relevant pathway's AUCell (combined sex, groups pooled, ~100K cells subsampled, target cell type outlined). Purpose = validation/QC: does each detected pathway localize to a sensible cell type. NOT a stress result. Per-cell plots (this grid + ridges) are orientation only — rigorous pathway evidence is pseudobulk GSEA NES/FDR + concordance + the 8b disruption analysis. Announced skip when none of a cell type's sig pathways were scored into the per-cell h5ad (seen for placenta myeloid/nk subclusters — upstream scoring question, not a plotting bug).
-- **Contrast-family prefix matching (reusable gotcha).** Brain uses generic contrast names (`early_vs_relaxed_per_age`) with age in `group_level`; placenta bakes the age into the name (`early_vs_relaxed_E12.5`, `late_vs_relaxed_E18.5`). NEVER match contrast names by exact string across tissues. `contrast_family()` resolves by prefix → EVR / LVR / EVL / WAA; a derived `cfam` column drives every contrast filter. This bug silently produced placenta plots with ONLY `per_cell/` until fixed — the per-slice volcano/dotplot/heatmap/leading-edge filters matched nothing, and the "volcano slices plotted: N" log counter counts slices VISITED not files WRITTEN, so it looked fine. **Lift `contrast_family` into `_utils.py` and reuse in 8f/8g** — same cross-tissue naming applies there.
+- **Contrast-family prefix matching (reusable gotcha).** Brain uses generic contrast names (`early_vs_relaxed_per_age`) with age in `group_level`; placenta bakes the age into the name (`early_vs_relaxed_E12.5`, `late_vs_relaxed_E18.5`). NEVER match contrast names by exact string across tissues. `contrast_family()` resolves by prefix → EVR / LVR / EVL / WAA; a derived `cfam` column drives every contrast filter. This bug silently produced placenta plots with ONLY `per_cell/` until fixed — the per-slice volcano/dotplot/heatmap/leading-edge filters matched nothing, and the "volcano slices plotted: N" log counter counts slices VISITED not files WRITTEN, so it looked fine. **Lift `contrast_family` into `_utils.py` and reuse in 8e/8f/8g** — same cross-tissue naming applies there.
 - **GO-relevance M5 label restriction (placenta-main only).** `config/celltype_go_relevance.yaml` (built by `build_go_relevance.py` from `config/celltype_go_keywords.yaml`) restricts which M5 GO terms get LABELED — volcano labels + dotplot rows + celltype×pathway heatmap cols (tissue-union for the cross-celltype heatmap). Brain has no entries → unrestricted (top-N by FDR). Does NOT touch concordance / ridges / localization grid.
 - **Placenta correctly produces no concordance and no trajectory:** no same-age Early-vs-Late (E12.5 = Early-only, E18.5 = Late-only) and no `within_group_across_age` contrast. (concordance = 0, trajectory empty — expected, not a bug.)
 - **Deferred:** the trajectory draws degenerate single-dot panels for sparse region×celltype slices (only one age-pair survives, e.g. CTXsp Immune = 4W_3mo only). Guard (whole-level only + require ≥2 age-pairs, then it draws real lines) deferred — fold in only if 8c summary is re-run for another reason.
+
+## Phase 8e plotting (locked 2026-06-24)
+`08e_comms_summary.py` plots from the 8e CSVs only (no recompute; mirrors the 8b/8c compute-plot split). Compute is `08e_comms.py`. Plot modules: `_08e_plots_baseline.py` (descriptive landscape + focal-fan grids), `_08e_plots_differential.py` (Δ LR heatmaps, rank-rank scatter), `_08e_plots_stats.py` (FDR-backed differential volcano/dotplot/Δ-network/Δ-chord/Δ-celltype-heatmap/sender-receiver up-down bars), `_08e_plots_pathway.py` (per-pathway graphs + LR dotplot + ranked lollipop + cross-scheme companion).
+
+**Run matrix:** both tissues × both node schemes, SERIAL (matplotlib not thread-safe). Brain is the long pole (~hours, regional levels); placenta ~10 min.
+```bash
+uv run python -u scripts/08e_comms_summary.py --config config/{placenta,brain}.yaml \
+  --node-scheme {broad,subtype} --by-pathway
+```
+- `--node-scheme {broad,subtype}` targets the matching compute dir (`08e_communication` / `08e_communication_subtype`). NOT the same as `--subcluster` (which points at `08e_communication_subcluster_<slug>`).
+- `--by-pathway` enables `06_by_pathway/` + the per-pathway focal grids.
+
+**Three arms (from compute).** `baseline` (`rank_aggregate`, pooled cells) = DESCRIPTIVE landscape only, NOT a stress test (pseudoreplication); carries `specificity_fdr` (BH within group×age×level, from `cellphone_pvals`). `differential` (`df_to_lr` on 8b Wald stats) = PRIMARY inferential, sig col `interaction_padj`. `perdonor` (MW-U) = corroboration, null at n≈4. **Placenta differential = 447 sig pairs; brain differential = NULL at every level/contrast** (receptor-side DE too weak — confirmed real, reported not fixed; `03_differential/` + differential per-pathway/grid plots are empty for brain, documented by `[info] no FDR<0.05 edges` log lines).
+
+**Seven plot families** (`plots/08e_communication{,_subtype}/`): `01_overview`, `02_baseline` (descriptive landscape; hairball all-pairs graphs kept ONLY as supplementary), `03_differential` (PRIMARY, FDR-backed), `04_sender_receiver`, `05_per_donor` (null corroboration), `06_by_pathway`, `07_focal_grids`.
+
+**Focal-fan grid = THE readable graph format.** Small-multiples, ONE cell type pinned per panel, edges fan to all others (width = strength). Legible because one focal node per panel — replaces the unreadable all-pairs hairball as the primary graph. Per-group descriptive grids reuse the proven `plot_network_graph`; the Δ grids use `plot_delta_network_grid`.
+
+**Four Δ-grid variants**, all sqrt-scaled edge widths, `unassigned_*` dropped:
+- baseline × {count, magnitude} — DESCRIPTIVE; both tissues; whole + regional + per-pathway.
+- differential × {count, magnitude} — FDR-backed; placenta only; whole + per-pathway.
+- count = # changed sig pairs on the edge; magnitude = Σ|Δ score| (baseline) / Σ|interaction_stat| (differential). Colour = net up(red)/down(blue). **sqrt is the single width-scaling used everywhere** — data showed per-edge max/min ratios 13–197, and sqrt is the only scaling readable across that whole range.
+
+**Per-pathway LR detail (the view that answers "which LR pairs changed, between which cells"):**
+- `lr_dotplot/` — rows = LR pairs (ligand→receptor), cols = cell-type pairs (source→target), colour = effect sign, size = significance/|effect|.
+- `lr_ranked/` — top-N LR pairs by |effect|, horizontal lollipop, labelled `Ligand→Receptor [source→target]`.
+- differential arm at whole (FDR-backed); baseline arm at every level incl. regions (descriptive). The graph (chord/network) is topology; the LR pair is the unit → the dotplot/ranked are the nameable detail.
+
+**Slice-specific adaptive effect floor (THE density control).** Each plot computes its OWN cutoff from its OWN pairs: keep pairs with |effect| ≥ the q-quantile WITHIN that exact slice (pathway × contrast × level × arm), then apply top_n. NOT one global number.
+- `--q-stat 0.25` — differential plots, floor on |interaction_stat| within the FDR<0.05 set.
+- `--q-delta 0.75` — baseline plots, floor on |Δ score| within the specificity-sig set.
+- Applied to: per-pathway dotplot/ranked/graphs, all Δ focal-grids, differential dotplot/Δ-network/Δ-chord/Δ-celltype-heatmap/updown-bars (via the shared `_aggregate_celltype_edges`).
+- NOT applied to: volcano, rank-rank scatter (distribution plots — must show all points), per-group descriptive graphs (single-group, no Δ to floor).
+- `top_n` (30 dotplot / 25 ranked) is the hard backstop if a slice survives the floor with many strong pairs.
+
+**specificity_fdr edge-filter** on baseline Δ graphs: keep an LR pair if `specificity_fdr ≤ 0.05` in EITHER group (field-standard CellPhoneDB threshold; "either" is correct for a Δ view — requiring both would discard stress-gained/lost channels).
+
+**Node schemes / levels / sex:** subtype = `comms_subtype` (focal-subcluster substates ≥300 cells as nodes, rest collapsed to parent broad; focal map in `config/stress_pathways_8e.yaml`). Brain whole + regional; placenta whole; differential whole-only. **Sex = combined-only, NOT stratified** — at n≈2/group per sex all three arms are degenerate; state as a methods limitation.
+
+**Pathway → gene set:** `graph_pathways` in `config/stress_pathways_8e.yaml` (9 brain + 11 placenta MH Hallmarks) × that pathway's 8c leading-edge genes (FDR<0.05, level=='whole'); LR pair in-pathway if ligand OR receptor in the set.
+
+**Gotchas (don't re-hit):**
+- The summary's `levels_present` must be defined before BOTH the by-pathway block and the focal-grid block use it (NameError if only one).
+- `level` must be passed to `plot_network_graph` / `plot_delta_network_grid` so per-region files don't collide on filename (whole + each region else overwrite).
+- clustermap (`delta_lr_heatmap`) drops zero-variance rows/cols before correlation clustering (else "condensed distance matrix must contain only finite values"); falls back to unclustered if <3 usable.
+- `_aggregate_celltype_edges` is the single chokepoint for Δ-network/Δ-chord/Δ-celltype-heatmap — the floor goes there once, not per-function.
+- tmux launch: ASCII-only command, no em-dash in comments, no `set -e` (so one tissue's failure doesn't kill the rest of the run).
 
 ## Phase 9 — two scientific arms (locked 2026-06-05)
 Cross-species RRHO2 validation runs as TWO arms reported separately, NOT pooled.
@@ -266,6 +316,7 @@ For every phase that takes >10 min on workstation: build a 1-sample (or 1-pool, 
 - Burned 30 min on missing `brain.yaml` CellTypist mappings.
 - **Phases that NEED smoke tests:** 1 SoupX, 5 scVI, 7 P1-scANVI (Rosenberg transfer), 8c with --tf, 9 cross-species.
 - **Phases too cheap to need smoke tests:** 0, 2, 3, 4, 6, 7 main (adult CellTypist), 7b, 7d, 7e, 8a, 8b, 8b follow-ups, 8d, 8e (under ~30 min wall time per tissue, parallelized).
+- **8e plotting:** smoke-test on placenta broad (~10 min, has both arms) before the full four-run; brain regional plotting is the long pole.
 
 ## Dev workflow — split at h5 level, not at runtime
 - **dev_split_h5.py** runs ONCE before Phase 0 on dev. Reads the 3 dev h5 files, writes 9 split h5 files (random barcode partition) into `data/dev_split/`, and emits `config/dev_split.yaml`.
@@ -317,7 +368,7 @@ The 8b master CSV reports DE on ALL genes. For visualization (heatmap top rows, 
 - Why these? In P1 brain, residual Hb in the master CSV showed up as ~650 sig age-DE genes in the `within_group_across_age` contrast — direction consistent across ALL groups including Relaxed. That's developmental erythroid signal (nucleated erythroblasts in residual vasculature, see Phase 1 = SoupX), NOT stress biology. Excluding them from visualization keeps the headline figures focused.
 
 ## Plot format strategy (locked 2026-06-05)
-- **Default: PNG @ 300 DPI** for all pipeline plots. Cell-level UMAPs with 600K dots aren't suitable for pure SVG.
+- **Default: PNG @ 300 DPI** for all pipeline plots. Cell-level UMAPs with 600K dots aren't suitable for pure SVG. (8e network/grid plots default to 150 DPI — many panels, large grids.)
 - **Paper figures only** (~5-10 plots): refactor to PNG + PDF hybrid via `_utils.savefig(fig, path, dpi=300)`.
 - Don't refactor all plotting scripts. Targeted post-Phase 8 update only.
 - **on-data UMAP labels require categorical dtype** — cast the color column to `category` before `sc.pl.umap(..., legend_loc="on data")`, else scanpy silently draws nothing.
@@ -340,10 +391,12 @@ The 8b master CSV reports DE on ALL genes. For visualization (heatmap top rows, 
 - **Subcluster runs go to suffixed folders** (`plots/08e_communication_subcluster_excitatory_neurons/...`).
 - **8b follow-ups share the 08b_de phase folder** — both tables and plots. Plots live under `plots/08b_de/summary/{disruption,consistency,shuffle_test}/{sex}/{level}.png`. Tables alongside the main 8b results CSV in `tables/08b_de/`.
 - **8c summary plots** live under `plots/08c_pathways{,_subcluster_*}/`: `combined/<level>/<celltype>/` (volcanos + dotplots), `_celltype_heatmaps/`, `concordance/` (brain only), `per_cell/` (ridges + `pathway_localization_grid.png`), `trajectory/` (brain only), `leading_edge/`.
+- **8e plots** live under `plots/08e_communication{,_subtype}/`: `01_overview/`, `02_baseline/`, `03_differential/`, `04_sender_receiver/`, `05_per_donor/`, `06_by_pathway/` (incl. `lr_dotplot/`, `lr_ranked/`, `cross_scheme/`, `baseline/<level>/`, `differential/`), `07_focal_grids/` (`<level>/` + `by_pathway/<PATHWAY>/`).
 
 ## Ask before strong scientific calls
 - Don't drop an analysis, exclude samples/ages, or add complexity (extra tools, sidecar venvs) without checking it earns its place for THIS dataset. Surface the question; don't bake the decision in silently.
 - Specifically don't propose: cross-tissue cell-cell communication (BBB makes it implausible — 8f view 4 is the correctly framed endocrine version); RNA velocity / CellRank (10x Flex probe-based, no spliced/unspliced); scCODA (dependency stack fights scanpy; propeller replaces it).
+- Don't apply an effect-size floor to distribution plots (volcano, rank-rank scatter) — those must show all points (8e learning).
 
 ## Workstation infrastructure
 - **SSH:** `ssh poller@172.17.213.147` (from Mac). User: `poller`.

@@ -83,6 +83,14 @@ def parse_args():
                    help="Pathway whitelist + focal map for --by-pathway.")
     p.add_argument("--zscore-rows", action="store_true",
                    help="Z-score rows of the Δ LR heatmap.")
+    p.add_argument("--q-stat", type=float, default=0.25,
+                   help="Slice-specific effect floor for DIFFERENTIAL plots: keep pairs "
+                        "with |interaction_stat| >= this percentile within each plot's "
+                        "own significant set. 0 disables.")
+    p.add_argument("--q-delta", type=float, default=0.75,
+                   help="Slice-specific effect floor for BASELINE plots: keep pairs with "
+                        "|Δ score| >= this percentile within each plot's own sig set. "
+                        "0 disables.")
     return p.parse_args()
 
 
@@ -238,11 +246,16 @@ def main():
                                                "age"].astype(str).unique()):
                 try:
                     ps.plot_differential_volcano(differential, cname, age, args.top_lr, d_diff)
-                    ps.plot_differential_dotplot(differential, cname, age, args.top_lr, d_diff)
-                    ps.plot_delta_network(differential, cname, age, d_diff, focus=focus)
-                    ps.plot_delta_chord(differential, cname, age, d_diff, focus=focus)
-                    ps.plot_delta_celltype_heatmap(differential, cname, age, d_diff)
-                    ps.plot_sender_receiver_updown_bars(differential, cname, age, d_diff)
+                    ps.plot_differential_dotplot(differential, cname, age, args.top_lr, d_diff,
+                                                 quantile=args.q_stat)
+                    ps.plot_delta_network(differential, cname, age, d_diff, focus=focus,
+                                          quantile=args.q_stat)
+                    ps.plot_delta_chord(differential, cname, age, d_diff, focus=focus,
+                                        quantile=args.q_stat)
+                    ps.plot_delta_celltype_heatmap(differential, cname, age, d_diff,
+                                                   quantile=args.q_stat)
+                    ps.plot_sender_receiver_updown_bars(differential, cname, age, d_diff,
+                                                        quantile=args.q_stat)
                 except Exception as e:
                     print(f"  [warn] differential {cname}/{age}: {e}")
         try:
@@ -328,12 +341,35 @@ def main():
                 # Build contrast specs from what's present in baseline (group/age) +
                 # the canonical primary contrasts. test vs ref(=Relaxed).
                 contrasts = _build_pathway_contrasts(baseline, differential, ref_group)
+                levels_present = (sorted(baseline["level"].astype(str).unique())
+                                  if "level" in baseline.columns else ["whole"])
                 d_pw = pdir_root / "06_by_pathway"
                 d_pw.mkdir(parents=True, exist_ok=True)
                 pw_plot.plot_by_pathway(
                     genesets, baseline,
                     differential if not differential.empty else None,
-                    contrasts, d_pw)
+                    contrasts, d_pw, q_delta=args.q_delta, q_stat=args.q_stat)
+
+                # ---- per-pathway LR-pair detail ----
+                # differential arm (FDR-backed, whole only):
+                if not differential.empty:
+                    pw_plot.plot_pathway_lr_dotplot(differential, genesets, contrasts,
+                                                    d_pw, arm="differential", quantile=args.q_stat)
+                    pw_plot.plot_pathway_lr_ranked(differential, genesets, contrasts,
+                                                   d_pw, arm="differential", quantile=args.q_stat)
+                else:
+                    print("  [info] per-pathway differential LR detail skipped "
+                          "(differential arm empty — e.g. brain).")
+                # baseline arm (descriptive, every level incl. regions):
+                for lvl in levels_present:
+                    bl = baseline[baseline.get("level", "whole").astype(str) == lvl] \
+                        if "level" in baseline.columns else baseline
+                    if bl.empty:
+                        continue
+                    pw_plot.plot_pathway_lr_dotplot(bl, genesets, contrasts, d_pw,
+                                                    arm="baseline", level=lvl, quantile=args.q_delta)
+                    pw_plot.plot_pathway_lr_ranked(bl, genesets, contrasts, d_pw,
+                                                   arm="baseline", level=lvl, quantile=args.q_delta)
 
                 # ---- cross-scheme companion (broad vs subtype, whole level) ----
                 # Load the OTHER scheme's baseline CSV. This run's `label` is either
@@ -346,7 +382,7 @@ def main():
                     bb = pd.read_csv(broad_csv, low_memory=False)
                     bs = pd.read_csv(sub_csv, low_memory=False)
                     pw_plot.plot_cross_scheme_companion(
-                        genesets, bb, bs, contrasts, d_pw)
+                        genesets, bb, bs, contrasts, d_pw, q_delta=args.q_delta)
                 else:
                     print("  [info] cross-scheme companion needs BOTH broad + subtype "
                           "baseline CSVs — run both schemes first; skipping.")
@@ -376,7 +412,8 @@ def main():
                     try:
                         pb.plot_delta_network_grid(
                             df_slice, grp_a, grp_b, age, cutoff, out_dir,
-                            level=level, metric=metric, arm="baseline")
+                            level=level, metric=metric, arm="baseline",
+                            quantile=args.q_delta)
                     except Exception as e:
                         print(f"  [warn] delta_grid baseline/{metric} {tag} "
                               f"{grp_a}-{grp_b}/{age}: {e}")
@@ -391,7 +428,8 @@ def main():
                             pb.plot_delta_network_grid(
                                 df_slice, tg, rg, age, cutoff, out_dir,
                                 level=level, metric=metric, arm="differential",
-                                differential_df=diff_slice, contrast_name=cname)
+                                differential_df=diff_slice, contrast_name=cname,
+                                quantile=args.q_stat)
                         except Exception as e:
                             print(f"  [warn] delta_grid diff/{metric} {tag} "
                                   f"{cname}/{age}: {e}")

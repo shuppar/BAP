@@ -260,10 +260,11 @@ def _draw_focal_fan_grid(edges, cell_types, sources, value_col, sign_col,
     return True
 
 
-def _baseline_edge_metrics(b, test_group, ref_group, spec_fdr):
-    """Per (source,target): n_changed (count of specificity-sig pairs with |Δ|>0)
-    and sum_abs_delta (Σ|Δ score|), plus net sign (Σ Δ). Δ per pair =
-    mean(test score) − mean(ref score), score = 1 − magnitude_rank."""
+def _baseline_edge_metrics(b, test_group, ref_group, spec_fdr, quantile=0.0):
+    """Per (source,target): n_changed, sum_abs_delta, net_delta. Δ per pair =
+    mean(test score) − mean(ref score), score = 1 − magnitude_rank.
+    SLICE-SPECIFIC FLOOR: drop pairs below the `quantile`-th percentile of |Δ| within
+    THIS slice's specificity-sig pairs before aggregating."""
     b = b.copy()
     if "specificity_fdr" in b.columns:
         key = ["source", "target", "ligand_complex", "receptor_complex"]
@@ -280,6 +281,11 @@ def _baseline_edge_metrics(b, test_group, ref_group, spec_fdr):
     pp = pp[pp["d"].abs() > 1e-9]
     if pp.empty:
         return pd.DataFrame()
+    if quantile and quantile > 0:
+        floor = pp["d"].abs().quantile(quantile)
+        pp = pp[pp["d"].abs() >= floor]
+        if pp.empty:
+            return pd.DataFrame()
     g = pp.reset_index().groupby(["source", "target"])
     out = pd.DataFrame({
         "n_changed": g.size(),
@@ -289,14 +295,20 @@ def _baseline_edge_metrics(b, test_group, ref_group, spec_fdr):
     return out
 
 
-def _differential_edge_metrics(d, contrast_name, age, fdr):
-    """Per (source,target): n_sig (FDR<fdr LR pairs), sum_abs_stat (Σ|interaction_stat|),
-    net_stat (Σ interaction_stat for sign)."""
+def _differential_edge_metrics(d, contrast_name, age, fdr, quantile=0.0):
+    """Per (source,target): n_changed, sum_abs_stat, net_stat.
+    SLICE-SPECIFIC FLOOR: drop pairs below the `quantile`-th percentile of
+    |interaction_stat| within THIS slice's FDR<fdr pairs before aggregating."""
     d = d[(d["contrast_name"] == contrast_name) & (d["age"].astype(str) == str(age))].copy()
     d = d.dropna(subset=["interaction_stat", "interaction_padj"])
     d = d[d["interaction_padj"] < fdr]
     if d.empty:
         return pd.DataFrame()
+    if quantile and quantile > 0:
+        floor = d["interaction_stat"].abs().quantile(quantile)
+        d = d[d["interaction_stat"].abs() >= floor]
+        if d.empty:
+            return pd.DataFrame()
     g = d.groupby(["source", "target"])
     out = pd.DataFrame({
         "n_changed": g.size(),
@@ -309,7 +321,7 @@ def _differential_edge_metrics(d, contrast_name, age, fdr):
 def plot_delta_network_grid(baseline_df, test_group, ref_group, age, magnitude_cutoff,
                             pdir, spec_fdr=0.05, level=None,
                             metric="count", arm="baseline", differential_df=None,
-                            contrast_name=None, fdr=0.05):
+                            contrast_name=None, fdr=0.05, quantile=0.0):
     """Δ focal-fan grid (one panel per source cell type), sqrt-scaled edge widths,
     unassigned_* dropped. Four variants:
 
@@ -318,6 +330,8 @@ def plot_delta_network_grid(baseline_df, test_group, ref_group, age, magnitude_c
       arm='differential' metric='count'      → width=√(# FDR<fdr LR pairs)   [placenta]
       arm='differential' metric='magnitude'  → width=√(Σ|interaction_stat|)  [placenta]
 
+    `quantile` = slice-specific effect floor (drop pairs below this percentile of
+    |Δ|/|stat| within this exact slice before counting).
     Colour = net direction (red=up / blue=down in stress). Baseline = DESCRIPTIVE
     (pooled cells); differential = FDR-backed."""
     if arm == "baseline":
@@ -329,7 +343,7 @@ def plot_delta_network_grid(baseline_df, test_group, ref_group, age, magnitude_c
         if b.empty or "magnitude_rank" not in b.columns:
             return
         b = b[b["magnitude_rank"] < magnitude_cutoff]
-        m = _baseline_edge_metrics(b, test_group, ref_group, spec_fdr)
+        m = _baseline_edge_metrics(b, test_group, ref_group, spec_fdr, quantile=quantile)
         value_col = "n_changed" if metric == "count" else "sum_abs_delta"
         sign_col = "net_delta"
         arm_tag = "DESCRIPTIVE (baseline, pooled cells, specificity-filtered)"
@@ -338,7 +352,7 @@ def plot_delta_network_grid(baseline_df, test_group, ref_group, age, magnitude_c
         if differential_df is None or differential_df.empty or contrast_name is None:
             return
         m = _differential_edge_metrics(_drop_unassigned(differential_df),
-                                       contrast_name, age, fdr)
+                                       contrast_name, age, fdr, quantile=quantile)
         value_col = "n_changed" if metric == "count" else "sum_abs_stat"
         sign_col = "net_stat"
         arm_tag = f"FDR<{fdr} (differential arm)"

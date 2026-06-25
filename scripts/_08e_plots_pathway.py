@@ -66,16 +66,14 @@ def _in_pathway_mask(df, genes, lig_col="ligand_complex", rec_col="receptor_comp
 # ---------------------------------------------------------------------------
 
 def _baseline_delta_edges(baseline_df, genes, age, level, test_group, ref_group,
-                          spec_fdr=0.05):
+                          spec_fdr=0.05, quantile=0.0):
     """Per (source,target): Δ = mean(test score) − mean(ref score), over in-pathway
     LR pairs. Score = (1 − magnitude_rank) so higher = stronger signalling.
 
     Edge-filter (field-standard, CellPhoneDB-style): keep only LR pairs whose
     specificity is significant (specificity_fdr <= spec_fdr) in EITHER the test or
-    ref group — i.e. a genuine signalling channel in at least one of the two groups
-    being differenced (keeps stress-gained/lost channels; requiring both would
-    discard them). Applied before aggregation. If specificity_fdr is absent
-    (n_perms=0), the filter is skipped (announced by caller)."""
+    ref group. `quantile` adds a slice-specific effect floor: drop per-pair Δ below
+    that percentile of |Δ| within this slice before aggregating to edges."""
     b = baseline_df[(baseline_df["age"].astype(str) == str(age)) &
                     (baseline_df.get("level", "whole").astype(str) == str(level))].copy()
     if b.empty or "magnitude_rank" not in b.columns:
@@ -83,7 +81,6 @@ def _baseline_delta_edges(baseline_df, genes, age, level, test_group, ref_group,
     b = b[_in_pathway_mask(b, genes)]
     if b.empty:
         return pd.DataFrame()
-    # specificity edge-filter, per (source,target,ligand,receptor) keyed on group
     if "specificity_fdr" in b.columns:
         b = b[b["group"].isin([test_group, ref_group])].copy()
         b["_spec_ok"] = b["specificity_fdr"] <= spec_fdr
@@ -93,17 +90,26 @@ def _baseline_delta_edges(baseline_df, genes, age, level, test_group, ref_group,
         if b.empty:
             return pd.DataFrame()
     b["score"] = 1.0 - b["magnitude_rank"].astype(float)
-    piv = (b.groupby(["source", "target", "group"])["score"].mean()
-           .unstack("group"))
-    if test_group not in piv.columns or ref_group not in piv.columns:
+    # per-pair Δ across the two groups, for the slice-specific floor
+    pp = (b.pivot_table(index=["source", "target", "ligand_complex", "receptor_complex"],
+                        columns="group", values="score", aggfunc="mean"))
+    if test_group not in pp.columns or ref_group not in pp.columns:
         return pd.DataFrame()
-    piv["delta"] = piv[test_group].fillna(0) - piv[ref_group].fillna(0)
-    cnt = (b.groupby(["source", "target"])["score"].size().rename("n_pairs"))
-    out = piv[["delta"]].join(cnt).reset_index().dropna(subset=["delta"])
+    pp["d"] = pp[test_group].fillna(0) - pp[ref_group].fillna(0)
+    pp = pp[pp["d"].abs() > 1e-9]
+    if pp.empty:
+        return pd.DataFrame()
+    if quantile and quantile > 0:
+        floor = pp["d"].abs().quantile(quantile)
+        pp = pp[pp["d"].abs() >= floor]
+        if pp.empty:
+            return pd.DataFrame()
+    g = pp.reset_index().groupby(["source", "target"])
+    out = pd.DataFrame({"delta": g["d"].mean(), "n_pairs": g["d"].size()}).reset_index()
     return out[out["delta"].abs() > 1e-9]
 
 
-def _differential_edges(diff_df, genes, contrast_name, age, fdr=0.05):
+def _differential_edges(diff_df, genes, contrast_name, age, fdr=0.05, quantile=0.0):
     d = diff_df[(diff_df["contrast_name"] == contrast_name) &
                 (diff_df["age"].astype(str) == str(age))].copy()
     d = d.dropna(subset=["interaction_stat", "interaction_padj"])
@@ -113,6 +119,11 @@ def _differential_edges(diff_df, genes, contrast_name, age, fdr=0.05):
     d = d[_in_pathway_mask(d, genes)]
     if d.empty:
         return pd.DataFrame()
+    if quantile and quantile > 0:
+        floor = d["interaction_stat"].abs().quantile(quantile)
+        d = d[d["interaction_stat"].abs() >= floor]
+        if d.empty:
+            return pd.DataFrame()
     agg = (d.groupby(["source", "target"])
            .agg(delta=("interaction_stat", "sum"),       # Σ signed stat (magnitude moved)
                 n_pairs=("interaction_stat", "size"))
@@ -196,10 +207,12 @@ def _draw_graph(edges, title, subtitle, out_png, kind="chord"):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def plot_by_pathway(genesets, baseline_df, differential_df, contrasts, pdir):
+def plot_by_pathway(genesets, baseline_df, differential_df, contrasts, pdir,
+                    q_delta=0.0, q_stat=0.0):
     """For each pathway × contrast × level, draw baseline Δ chord+network and (if
     available) differential chord+network. contrasts: list of dicts with keys
-    name, test_group, ref_group, age, label."""
+    name, test_group, ref_group, age, label. q_delta/q_stat = slice-specific effect
+    floors for the baseline / differential edge builders."""
     made = 0
     for pw, genes in genesets.items():
         pslug = _slug(pw)
@@ -209,7 +222,8 @@ def plot_by_pathway(genesets, baseline_df, differential_df, contrasts, pdir):
                 if not baseline_df.empty else []
             for lvl in levels:
                 e = _baseline_delta_edges(baseline_df, genes, c["age"], lvl,
-                                          c["test_group"], c["ref_group"])
+                                          c["test_group"], c["ref_group"],
+                                          quantile=q_delta)
                 if e.empty:
                     continue
                 sub = (f"baseline Δ(score) {c['label']} | {c['age']} | level={lvl} | "
@@ -222,7 +236,8 @@ def plot_by_pathway(genesets, baseline_df, differential_df, contrasts, pdir):
                         made += 1
             # ---- differential (FDR-backed; placenta) ----
             if differential_df is not None and not differential_df.empty:
-                e = _differential_edges(differential_df, genes, c["name"], c["age"])
+                e = _differential_edges(differential_df, genes, c["name"], c["age"],
+                                        quantile=q_stat)
                 if not e.empty:
                     sub = (f"differential Σ(stat) {c['label']} | {c['age']} | "
                            f"{len(e)} edges  —  FDR<0.05 LR pairs in pathway")
@@ -268,7 +283,7 @@ def _draw_graph_on_ax(ax, edges, title):
 
 
 def plot_cross_scheme_companion(genesets, baseline_broad, baseline_subtype,
-                                contrasts, pdir, spec_fdr=0.05):
+                                contrasts, pdir, spec_fdr=0.05, q_delta=0.0):
     """Per pathway × contrast (whole level): broad scheme (left) vs subtype scheme
     (right), side by side, so you can see whether a pathway's signalling localizes
     to a focal substate (e.g. Hofbauer vs whole Myeloid). Baseline Δ, descriptive."""
@@ -277,9 +292,11 @@ def plot_cross_scheme_companion(genesets, baseline_broad, baseline_subtype,
         pslug = _slug(pw)
         for c in contrasts:
             eb = _baseline_delta_edges(baseline_broad, genes, c["age"], "whole",
-                                       c["test_group"], c["ref_group"], spec_fdr)
+                                       c["test_group"], c["ref_group"], spec_fdr,
+                                       quantile=q_delta)
             es = _baseline_delta_edges(baseline_subtype, genes, c["age"], "whole",
-                                       c["test_group"], c["ref_group"], spec_fdr)
+                                       c["test_group"], c["ref_group"], spec_fdr,
+                                       quantile=q_delta)
             if eb.empty and es.empty:
                 continue
             fig, axes = plt.subplots(1, 2, figsize=(18, 9))
@@ -296,4 +313,161 @@ def plot_cross_scheme_companion(genesets, baseline_broad, baseline_subtype,
             plt.close(fig)
             made += 1
     print(f"  cross-scheme companion figures written: {made}")
+    return made
+
+
+
+# ---------------------------------------------------------------------------
+# Per-pathway LR-pair detail: DOTPLOT + ranked LOLLIPOP
+#   arm='differential' (whole only)  → value=interaction_stat, sig=interaction_padj
+#   arm='baseline'      (whole+regional) → value=Δ score, sig=specificity_fdr (either)
+# ---------------------------------------------------------------------------
+
+def _lr_label(row):
+    l = str(row.get("ligand", row.get("ligand_complex", "?")))
+    r = str(row.get("receptor", row.get("receptor_complex", "?")))
+    return f"{l}→{r}"
+
+
+def _pathway_lr_table(df, genes, arm, contrast, fdr, spec_fdr, level=None,
+                      quantile=0.0):
+    """Return a tidy per-(LR pair × cell-type pair) table for one pathway × contrast,
+    columns: lr, ctp, source, target, value, size.
+    arm='differential': value=interaction_stat, size=-log10(interaction_padj), FDR<fdr.
+    arm='baseline':     value=Δ score (test−ref), size=|Δ|, specificity-sig (either grp).
+
+    SLICE-SPECIFIC FLOOR: after building this exact slice's significant pairs, drop
+    those whose |value| is below the `quantile`-th percentile OF THIS SLICE. The
+    cutoff is computed from the pairs this plot actually draws — not a global value."""
+    d = df[_in_pathway_mask(df, genes)].copy()
+    if d.empty:
+        return pd.DataFrame()
+    if arm == "differential":
+        d = d[(d["contrast_name"] == contrast["name"]) &
+              (d["age"].astype(str) == str(contrast["age"]))]
+        d = d.dropna(subset=["interaction_stat", "interaction_padj"])
+        d = d[d["interaction_padj"] < fdr]
+        if d.empty:
+            return pd.DataFrame()
+        d["value"] = d["interaction_stat"].astype(float)
+        if quantile and quantile > 0:
+            floor = d["value"].abs().quantile(quantile)
+            d = d[d["value"].abs() >= floor]
+        if d.empty:
+            return pd.DataFrame()
+        d["lr"] = d.apply(_lr_label, axis=1)
+        d["ctp"] = d["source"].astype(str) + "→" + d["target"].astype(str)
+        d["size"] = -np.log10(d["interaction_padj"].clip(lower=1e-300))
+        return d[["lr", "ctp", "source", "target", "value", "size"]]
+    # baseline arm
+    tg, rg = contrast["test_group"], contrast["ref_group"]
+    b = d[(d["age"].astype(str) == str(contrast["age"])) &
+          (d["group"].isin([tg, rg]))].copy()
+    if level is not None and "level" in b.columns:
+        b = b[b["level"].astype(str) == str(level)]
+    if b.empty or "magnitude_rank" not in b.columns:
+        return pd.DataFrame()
+    key = ["source", "target", "ligand_complex", "receptor_complex"]
+    if "specificity_fdr" in b.columns:
+        b["_ok"] = b["specificity_fdr"] <= spec_fdr
+        b = b[b.groupby(key)["_ok"].transform("any")]
+        if b.empty:
+            return pd.DataFrame()
+    b["score"] = 1.0 - b["magnitude_rank"].astype(float)
+    pp = b.pivot_table(index=key, columns="group", values="score", aggfunc="mean")
+    if tg not in pp.columns or rg not in pp.columns:
+        return pd.DataFrame()
+    pp["value"] = pp[tg].fillna(0) - pp[rg].fillna(0)
+    pp = pp[pp["value"].abs() > 1e-9].reset_index()
+    if pp.empty:
+        return pd.DataFrame()
+    if quantile and quantile > 0:
+        floor = pp["value"].abs().quantile(quantile)
+        pp = pp[pp["value"].abs() >= floor]
+        if pp.empty:
+            return pd.DataFrame()
+    pp["lr"] = pp.apply(_lr_label, axis=1)
+    pp["ctp"] = pp["source"].astype(str) + "→" + pp["target"].astype(str)
+    pp["size"] = pp["value"].abs()
+    return pp[["lr", "ctp", "source", "target", "value", "size"]]
+
+
+def plot_pathway_lr_dotplot(df, genesets, contrasts, pdir, arm="differential",
+                            level=None, fdr=0.05, spec_fdr=0.05, top_n=30,
+                            quantile=0.0):
+    """Per pathway × contrast dot plot: rows=LR pairs, cols=cell-type pairs,
+    colour=sign of effect (red up/blue down in stress), size=significance/|effect|."""
+    lvl_slug = f"_{_slug(level)}" if level is not None else ""
+    arm_tag = ("FDR<%g; size=-log10(FDR)" % fdr if arm == "differential"
+               else "DESCRIPTIVE Δ score; specificity-filtered; size=|Δ|")
+    made = 0
+    for pw, genes in genesets.items():
+        pslug = _slug(pw)
+        for c in contrasts:
+            d = _pathway_lr_table(df, genes, arm, c, fdr, spec_fdr, level, quantile=quantile)
+            if d.empty:
+                continue
+            top_lr = (d.groupby("lr")["size"].max().sort_values(ascending=False)
+                      .head(top_n).index.tolist())
+            d = d[d["lr"].isin(top_lr)]
+            lrs = d.groupby("lr")["size"].max().sort_values().index.tolist()
+            ctps = sorted(d["ctp"].unique())
+            xi = {x: i for i, x in enumerate(ctps)}
+            yi = {y: i for i, y in enumerate(lrs)}
+            smax = d["size"].max() or 1.0
+            fig, ax = plt.subplots(figsize=(max(6, len(ctps) * 0.4 + 4),
+                                            max(4, len(lrs) * 0.34 + 2)))
+            for _, r in d.iterrows():
+                col = UP if r["value"] > 0 else DN
+                ax.scatter(xi[r["ctp"]], yi[r["lr"]], s=30 + 220 * r["size"] / smax,
+                           c=col, edgecolors="k", linewidths=0.3, alpha=0.85)
+            ax.set_xticks(range(len(ctps))); ax.set_xticklabels(ctps, rotation=90, fontsize=6)
+            ax.set_yticks(range(len(lrs))); ax.set_yticklabels(lrs, fontsize=7)
+            lvl_t = f" | level={level}" if level is not None else ""
+            ax.set_title(f"{pw} — LR pairs changed | {c['label']} | {c['age']}{lvl_t}\n"
+                         f"{arm_tag}; red=up/blue=down in stress", fontsize=9)
+            ax.margins(0.04)
+            d_out = pdir / "lr_dotplot"; d_out.mkdir(parents=True, exist_ok=True)
+            fig.tight_layout()
+            fig.savefig(d_out / f"{pslug}_{arm}_{c['label']}_{c['age']}{lvl_slug}.png",
+                        dpi=150, bbox_inches="tight")
+            plt.close(fig); made += 1
+    print(f"  per-pathway LR dotplots ({arm}{lvl_slug}) written: {made}")
+    return made
+
+
+def plot_pathway_lr_ranked(df, genesets, contrasts, pdir, arm="differential",
+                           level=None, fdr=0.05, spec_fdr=0.05, top_n=25,
+                           quantile=0.0):
+    """Per pathway × contrast horizontal lollipop: top-N LR pairs by |effect|,
+    labelled 'Ligand→Receptor [source→target]', stem red(up)/blue(down) in stress."""
+    lvl_slug = f"_{_slug(level)}" if level is not None else ""
+    xlab = ("interaction_stat" if arm == "differential" else "Δ score (test−ref)")
+    made = 0
+    for pw, genes in genesets.items():
+        pslug = _slug(pw)
+        for c in contrasts:
+            d = _pathway_lr_table(df, genes, arm, c, fdr, spec_fdr, level, quantile=quantile)
+            if d.empty:
+                continue
+            d["lab"] = d.apply(lambda r: f"{r['lr']}  [{r['source']}→{r['target']}]", axis=1)
+            d["absval"] = d["value"].abs()
+            d = d.sort_values("absval", ascending=False).head(top_n).sort_values("value")
+            y = np.arange(len(d))
+            cols = [UP if v > 0 else DN for v in d["value"]]
+            fig, ax = plt.subplots(figsize=(9, max(3, len(d) * 0.32 + 1.5)))
+            ax.hlines(y, 0, d["value"], color=cols, lw=2, alpha=0.8)
+            ax.scatter(d["value"], y, c=cols, s=45, edgecolors="k", linewidths=0.4, zorder=3)
+            ax.axvline(0, color="k", lw=0.6)
+            ax.set_yticks(y); ax.set_yticklabels(d["lab"], fontsize=7)
+            lvl_t = f" | level={level}" if level is not None else ""
+            ax.set_xlabel(f"{xlab}  (← down | up → in stress)")
+            ax.set_title(f"{pw} — top {len(d)} changed LR pairs | {c['label']} | {c['age']}{lvl_t}\n"
+                         f"ranked by |{xlab}|", fontsize=9)
+            d_out = pdir / "lr_ranked"; d_out.mkdir(parents=True, exist_ok=True)
+            fig.tight_layout()
+            fig.savefig(d_out / f"{pslug}_{arm}_{c['label']}_{c['age']}{lvl_slug}.png",
+                        dpi=150, bbox_inches="tight")
+            plt.close(fig); made += 1
+    print(f"  per-pathway ranked LR lollipops ({arm}{lvl_slug}) written: {made}")
     return made

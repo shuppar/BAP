@@ -58,7 +58,7 @@
 
 ## 1b. Implementation Status
 
-**All phases through 8a implemented and run on the workstation; 8b main DE done; 8b follow-ups (disruption + shuffle null) done for brain main + 3 focal subclusters; 8c–8g implemented and smoke-tested, production wiring in progress.** Cross-tissue (8f) and cross-age (8g) views operate on completed 8b/8c CSVs so they need no re-runs.
+**All phases through 8a implemented and run on the workstation; 8b main DE done; 8b follow-ups (disruption + shuffle null) done for brain main + 3 focal subclusters; 8c–8d smoke-tested; 8e PRODUCTION-COMPLETE (compute + all plotting, both tissues × broad+subtype node schemes, 2026-06-24); 8f–8g implemented and smoke-tested, production wiring in progress.** Cross-tissue (8f) and cross-age (8g) views operate on completed 8b/8c CSVs so they need no re-runs.
 
 > **Workstation target** (where production runs go; see §3 for detail):
 > Linux box, **258 GB RAM, 56 CPU cores, 1× NVIDIA RTX 4500 Ada (24 GB VRAM)**.
@@ -85,7 +85,8 @@
 | 8b Disruption shuffle test (k-preserving null + within-stratum binomial) | ✓ done (brain main + 3 focal subclusters) | `08b_disruption_shuffle_test.py` |
 | 8c GSEA + leading-edge + TF activity | ✓ smoke-tested (decoupler ULM + CollecTRI) | `08c_pathways.py` + `fetch_genesets.R` |
 | 8d Trajectory (PAGA + DPT) | ✓ smoke-tested | `08d_trajectory.py` |
-| 8e Cell-cell communication | ✓ smoke-tested (LIANA+) | `08e_communication.py` |
+| 8e Cell-cell communication (compute) | ✓ DONE — both tissues, broad + subtype node schemes, 3 arms, n_perms=1000 (2026-06-24) | `08e_comms.py` + `_08e_*` workers |
+| 8e Communication (plotting) | ✓ DONE — both tissues × both schemes; 7 plot families incl. focal-fan grids + per-pathway LR detail (2026-06-24) | `08e_comms_summary.py` + `_08e_plots_{baseline,differential,stats,pathway}.py` |
 | 8f Cross-tissue | ✓ smoke-tested (six views) | `08f_cross_tissue.py` |
 | 8g Cross-age / persistence | ✓ smoke-tested (brain only) | `08g_cross_age.py` |
 | 9 Cross-species RRHO2 | loaders are stubs | `09_cross_species_validation.py` |
@@ -117,6 +118,8 @@
 12. **Phase 8a finalized (2026-06-15):** propeller composition now runs the full sex-strata schema (combined + M + F, via `iter_strata`) on every per-age group/omnibus contrast, parallelized across slices via `_utils.parallel_map` (`--n-jobs`; ~3 h serial → minutes). Contaminants + `unassigned*` cells dropped from numerator and denominator (recorded in `08a_dropped_cells_per_donor.csv`); `pool` dropped + flagged `confounded_with_pool` only where perfectly aliased with `group` (P1 Late, and one placenta E12.5 sex stratum). `min_donors=2` to run, `<3` → `low_n`. Change heatmaps **bold-outline FDR<0.05 cells**; makeup bars stay descriptive. This is the template for 8b–8g.
 
 13. **Phase 8b follow-ups locked (2026-06-15) — disruption + shuffle null.** Three brain-only scripts consume the master `08b_de_results.csv` (no DE re-run) and produce the headline disruption analysis. Findings: every brain broad cell type shows **R∩E and R∩L enriched (↑\*\*\*) and E∩L depleted (↓\*\*\*)** under a k-preserving null — i.e., when age-DE signal is shared across two groups, Relaxed is almost always one of them. See INSTRUCTIONS.md §"Disruption analysis framing" and §5 below for the full claim.
+
+14. **Phase 8e production-complete (compute + plotting, locked 2026-06-24).** Split compute/plot like 8b/8c. Compute (`08e_comms.py`) ran both tissues × broad+subtype node schemes, three arms (baseline/differential/perdonor), n_perms=1000. **Key result: placenta differential = 447 sig LR pairs (`interaction_padj`); brain differential = NULL at every level/contrast** (receptor-side DE too weak at coarse grouping — confirmed real, not a bug). Plotting (`08e_comms_summary.py`) produces 7 families; the readable graph is the **focal-fan small-multiples grid** (one cell type pinned per panel) — hairball all-pairs graphs kept only as supplementary. Per-pathway **LR dotplot + ranked lollipop** answer "which LR pairs changed, between which cells." A **slice-specific adaptive effect floor** (each plot computes its own cutoff from its own pairs; `--q-stat 0.25` differential, `--q-delta 0.75` baseline) controls density, applied to all Δ/aggregating/per-pathway plots but NOT distribution plots (volcano, rank-rank). Sex NOT stratified (n≈2/group degenerate). See §5 + INSTRUCTIONS.md §"Phase 8e plotting".
 
 ---
 
@@ -299,8 +302,16 @@ GSEA on ranked DE statistics (decoupler + mouse MSigDB via msigdbr, FDR within c
 #### 8d. Trajectory (`08d_trajectory.py`) — Brain primarily
 PAGA (always) + diffusion pseudotime anchored at progenitors. **No velocity, no CellRank** (Flex probe-based). Focal lineages: oligo (OPC→OL), microglia, astrocyte. PAGA edges = hypotheses (edge diagnostics CSV).
 
-#### 8e. Cell-Cell Communication (`08e_communication.py`)
-LIANA+ consensus, three arms (baseline / differential from 8b Wald stats / per-donor). Covers ES-v-Rel, LS-v-Rel, ES-v-LS. Placenta focus: trophoblast ↔ decidua ↔ fetal vasculature. Brain focus: neuron ↔ glia, microglia ↔ neuron.
+#### 8e. Cell-Cell Communication (`08e_comms.py` compute + `08e_comms_summary.py` plotting) — PRODUCTION-COMPLETE (2026-06-24)
+LIANA-py 1.7.3, split compute/plot (mirrors 8b/8c). Covers ES-v-Rel, LS-v-Rel, ES-v-LS. Placenta focus: trophoblast ↔ decidua ↔ fetal vasculature. Brain focus: neuron ↔ glia, microglia ↔ neuron.
+
+**Three arms** — `baseline` (`rank_aggregate` per group×age, pooled cells) is DESCRIPTIVE only (pseudoreplication, not a stress test) but carries `specificity_fdr` (BH within group×age×level, from `cellphone_pvals` perms); `differential` (`df_to_lr` on 8b Wald stats) is the PRIMARY inferential arm, sig col `interaction_padj`, animal-respecting via 8b; `perdonor` (`rank_aggregate` per donor → MW-U) is corroboration (null at n≈4, expected). **Placenta differential = 447 sig pairs; brain differential = NULL at every level/contrast** (receptor-side DE too weak at coarse grouping — confirmed real, not a bug).
+
+**Node schemes** (`--node-scheme {broad,subtype}`): broad = canonical key (dir `08e_communication/`); subtype = `comms_subtype` (focal-subcluster substates ≥300 cells as nodes, smaller + non-focal collapsed to parent broad; dir `08e_communication_subtype/`; focal map in `config/stress_pathways_8e.yaml`). **Levels:** brain whole + regional (`celltypist_region`); placenta whole only; differential arm is whole-only. **Sex:** combined-only — NOT stratified (n≈2/group per sex makes all three arms degenerate); stated as a methods limitation.
+
+**Plotting (7 families, CSV-only no recompute):** `01_overview`, `02_baseline` (descriptive landscape; hairball all-pairs graphs kept as supplementary only), `03_differential` (PRIMARY, FDR-backed: volcano/dotplot/Δ-network/Δ-chord/Δ-celltype-heatmap/sender-receiver up-down bars/stress-signature heatmap), `04_sender_receiver`, `05_per_donor` (null corroboration), `06_by_pathway` (per stress pathway: chord+network graphs + **LR dotplot** + **ranked LR lollipop** + **cross-scheme companion** broad-vs-subtype), `07_focal_grids`. **The readable graph format = focal-fan small-multiples grid** (one cell type pinned per panel, edges fan to all others) — per-group descriptive + 4 Δ variants (count/magnitude × baseline/differential), sqrt-scaled widths, `unassigned_*` dropped, across whole + per-pathway + regional + subtype.
+
+**Pathway → gene set:** `graph_pathways` in `config/stress_pathways_8e.yaml` (9 brain + 11 placenta MH Hallmarks) × that pathway's 8c leading-edge genes (FDR<0.05, level=='whole'); LR pair in-pathway if ligand OR receptor in set. **Slice-specific adaptive effect floor (THE density control):** each Δ/aggregating/per-pathway plot keeps pairs with |effect| ≥ the q-quantile WITHIN that exact slice (`--q-stat 0.25` differential on |interaction_stat|; `--q-delta 0.75` baseline on |Δ score|); NOT applied to distribution plots (volcano, rank-rank) or per-group descriptive graphs; `top_n` (30 dotplot/25 ranked) is the hard backstop. **specificity_fdr edge-filter** (≤0.05 in EITHER group) on baseline Δ graphs.
 
 #### 8f. Cross-Tissue Link (`08f_cross_tissue.py`) — THE UNIQUE ANGLE
 Six views, reproducible from 8b/8c CSVs. Two biologically aligned arms: E12.5 placenta (Early) → P1/4W/3mo brain (Early); E18.5 placenta (Late) → same (P1 Late flagged `confounded_with_pool`). Views: DEG overlap (hypergeom), RRHO (custom NumPy), pathway concordance, **LR cross-tissue hypotheses (placental ligand × brain receptor, `stress_axis` flag — the publication-quality output)**, TF concordance, ORA. **No cross-tissue CCC** (BBB).
@@ -450,7 +461,9 @@ Together these support the framing: *"prenatal stress predominantly disrupts exi
 1. Run 8c (`uv run python scripts/08c_pathways.py --config config/brain.yaml --tf`) for brain main + 7 focal subclusters. Same for placenta where applicable.
 2. Verify GSEA leading-edge tables match the LOST/GAINED direction-class genes from 8b follow-ups (expected: stress-relevant gene sets — GR targets, HPA, neuroinflammation, ER-stress — should show up in the leading-edges of LOST-class genes).
 
-**8d/8e production runs:** trajectory + cell-cell communication, both tissues.
+**8e production-complete (2026-06-24):** cell-cell communication compute + all plotting done, both tissues × broad+subtype node schemes. Brain differential null (receptor-side DE too weak); placenta 447 sig LR pairs is the real CCC signal. Centerpiece plots = focal-fan grids + per-pathway LR dotplot/ranked, all with slice-specific adaptive effect floors.
+
+**8d production run:** trajectory, both tissues (still smoke-tested only).
 
 **8f/8g (need both tissues complete through 8c):** cross-tissue cascade + cross-age persistence. 8g brain-only; 8f draws on both tissues' 8b/8c CSVs.
 
@@ -492,6 +505,14 @@ Together these support the framing: *"prenatal stress predominantly disrupts exi
 | **Cell-cell communication** | LIANA+ consensus, contrast-driven; NO cross-tissue CCC | BBB makes literal cross-tissue signalling implausible (8f view 4 is endocrine) |
 | **Cross-tissue** | E12.5→Early brain cascade; E18.5→Late brain cascade | Aligns placenta sampling window with stress timing |
 | **Cross-age (8g)** | brain only; persistence per Early/Late arm | Placenta has incomplete cross-age factorial |
+| **8e arms** | baseline=descriptive (not a stress test); differential=primary (FDR via `interaction_padj`); per-donor=corroboration (null at n≈4) | Only the differential arm carries animal-respecting stress inference |
+| **8e brain differential** | NULL everywhere — reported, not fixed | Receptor-side DE too weak at coarse grouping; confirmed real |
+| **8e sex** | combined-only, NOT stratified | n≈2/group per sex → all three arms degenerate |
+| **8e readable graph** | focal-fan small-multiples grid (one cell type per panel) | Hairball all-pairs graphs unreadable at 20+ nodes; kept only as supplementary |
+| **8e Δ grids** | 4 variants (count/magnitude × baseline/differential), sqrt-scaled, unassigned dropped | sqrt is the one width-scaling that reads across all metric ranges (ratios 13–197) |
+| **8e effect floor** | slice-specific adaptive: \|effect\| ≥ q-quantile within each plot's own pairs; q-stat=0.25, q-delta=0.75 | Each plot thins by its own distribution; not a global constant |
+| **8e floor scope** | Δ/aggregating/per-pathway plots only; NOT volcano/rank-rank or per-group descriptive graphs | Flooring a distribution plot hides the points that give it meaning |
+| **8e LR-pair detail** | per-pathway LR dotplot + ranked lollipop (LR pair is the unit) | Graphs answer topology; the dotplot/ranked answer "which LR pairs changed, between which cells" |
 | **8b follow-ups: disruption framing** | NOT "LOST > GAINED" alone (partly maths artifact); the clean claim is "R∩E + R∩L enriched, E∩L depleted across all cell types under k-preserving null" | LOST > GAINED is partly explained by `n_k1 > n_k2` and the AND requirement on GAINED; the within-stratum R∩E/R∩L pattern is robust to those |
 | **8b shuffle-test null** | k-preserving (each gene keeps total #sig groups but randomizes WHICH groups) | Symmetric independence null overestimated marginals 3× and falsely showed obs as depleted; k-preserving null correctly captures gene-level overlap structure |
 | **8b shuffle-test inferences** | Per-category analytic binomial (`Binom(n_k_stratum, 1/3)`) for the 6 disjoint sig patterns + within-stratum chi-square | Analytic is exact; permutation kept as sanity check on LOST/GAINED diff |
