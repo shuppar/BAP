@@ -1,0 +1,97 @@
+# config/human_placenta_markers.yaml
+# Marker panels for human placenta annotation (h09d), matching the Gunter-Rahman
+# GSE271976 / iScience 2025 cell-type scheme. Used for marker-majority scoring:
+# sc.tl.score_genes per panel -> per-Leiden-cluster mean score -> argmax = label.
+#
+# `subtypes` = fine labels (paper-exact). `compartment` maps each subtype to one of
+# 5 cross-species compartments (the RRHO bridge level + the SingleR-corroboration level).
+# Markers are canonical human symbols; verify any unfamiliar one against the matrix.
+
+subtypes:
+  # --- TROPHOBLAST -----------------------------------------------------------
+  npVCT:                 # non-proliferating villous cytotrophoblast
+    markers: [TP63, TEAD4, ITGA6, CDH1, ELF5, PAGE4, PEG10]
+    compartment: trophoblast
+  pVCT:                  # proliferating villous CTB
+    markers: [MKI67, TOP2A, CCNB1, CENPF, TP63, TEAD4]
+    compartment: trophoblast
+  fusing_VCT:            # CTB fusing toward SCT
+    markers: [ERVFRD-1, ERVW-1, GCM1, CGA, OVOL1]
+    compartment: trophoblast
+  SCT:                   # syncytiotrophoblast (general)
+    markers: [CGA, CGB3, CGB5, CSH1, CSH2, CYP19A1, INHA, GDF15, PSG1, PSG3]
+    compartment: trophoblast
+  SCT_FLT1:              # SCT state (anti-angiogenic / preeclampsia-assoc)
+    markers: [FLT1, ENG, INHBA, LEP]
+    compartment: trophoblast
+  SCT_BACE2:
+    markers: [BACE2, ADAM12, PAPPA]
+    compartment: trophoblast
+  SCT_PTCHD4:
+    markers: [PTCHD4, KISS1, HSD11B2]
+    compartment: trophoblast
+  SCT_ECM:               # ECM-high SCT state
+    markers: [FN1, COL4A1, LAMA5, TIMP3]
+    compartment: trophoblast
+  EVT:                   # extravillous trophoblast
+    markers: [HLA-G, ITGA1, ITGA5, NOTCH1, DIO2, ASCL2, PLAC8, AOC1]
+    compartment: trophoblast
+
+  # --- DECIDUA / STROMAL -----------------------------------------------------
+  dS:                    # decidual stromal cells
+    markers: [PAEP, DKK1, IGFBP1, PRL, LUM, IL15]
+    compartment: decidua_stromal
+  FB1:                   # fibroblast subset 1
+    markers: [DCN, LUM, COL1A1, COL3A1, PDGFRA]
+    compartment: decidua_stromal
+  FB2:                   # fibroblast subset 2
+    markers: [DLK1, APOD, MGP, COL6A3]
+    compartment: decidua_stromal
+  EGC:                   # (epithelial) glandular secretory / extravillous glands
+    markers: [EPCAM, KRT8, KRT18, MUC1, PAEP]
+    compartment: decidua_stromal
+
+  # --- VASCULAR --------------------------------------------------------------
+  Endo:                  # endothelial
+    markers: [PECAM1, CDH5, VWF, KDR, CLDN5, EGFL7]
+    compartment: vascular
+  Endo_M:                # maternal/other endothelial subset
+    markers: [PECAM1, CDH5, ACKR1, SELE]
+    compartment: vascular
+  LED:                   # lymphatic endothelial
+    markers: [PROX1, LYVE1, PDPN, FLT4]
+    compartment: vascular
+  PV:                    # perivascular / pericyte
+    markers: [ACTA2, PDGFRB, MCAM, RGS5, NOTCH3]
+    compartment: vascular
+
+  # --- IMMUNE ----------------------------------------------------------------
+  dNK:                   # decidual NK
+    markers: [NCAM1, KLRD1, GNLY, NKG7, KLRC1, ITGA1]
+    compartment: immune
+  NK_CD16:               # peripheral-type CD16+ NK
+    markers: [FCGR3A, KLRD1, NKG7, GNLY, FGFBP2]
+    compartment: immune
+  T:                     # T cells
+    markers: [CD3D, CD3E, CD2, TRAC, IL7R]
+    compartment: immune
+  B:                     # B / plasma
+    markers: [CD79A, MS4A1, IGHM, MZB1, CD19]
+    compartment: immune
+  dM:                    # decidual macrophage
+    markers: [CD68, CD14, LYVE1, FOLR2, MRC1, CSF1R]
+    compartment: immune
+  BM:                    # blood/other monocyte-macrophage
+    markers: [CD14, FCN1, S100A8, S100A9, VCAN]
+    compartment: immune
+  FM:                    # fetal macrophage / Hofbauer-like
+    markers: [CD68, LYVE1, F13A1, RNASE1, SPP1]
+    compartment: immune
+
+  # --- ERYTHROID -------------------------------------------------------------
+  Eryth:
+    markers: [HBA1, HBA2, HBB, HBG1, HBG2, GYPA, ALAS2, GATA1]
+    compartment: erythroid
+
+# Convenience: the 5 cross-species compartments (RRHO bridge + SingleR check level)
+compartments: [trophoblast, decidua_stromal, vascular, immune, erythroid]
