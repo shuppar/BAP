@@ -89,7 +89,7 @@ dependencies = [
     "mpl-chord-diagram>=0.4",              # chord diagram plots in 08e (CCC overview)
     # --- Plotting & reporting ---
     "matplotlib>=3.8",
-    "adjustText>=1.0",                      # non-overlapping gene labels on volcano plots
+    "adjusttext>=1.0",                      # non-overlapping gene labels on volcano plots
     # (08b); pure-Python, optional at runtime
     "seaborn>=0.13",
     "plotly>=5.20",
@@ -122,6 +122,7 @@ dependencies = [
     "gitpython>=3.1",                       # capture git SHA into manifest.json
     "matplotlib-venn>=1.1.2",
     "upsetplot>=0.9.0",
+    "pybiomart>=0.2.0",
 ]
 
 [project.optional-dependencies]

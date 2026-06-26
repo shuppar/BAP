@@ -3,46 +3,59 @@
 08g_cross_age.py — Phase 8g: Cross-age persistence analysis.
 
 Operates entirely on existing 8b/8c tables — no re-running of DE/GSEA.
-Six analytical views answering: "of the signals deregulated by prenatal stress,
-which persist across development, which resolve, which emerge later?"
+Comprehensive persistence (views 1-3,5,6) PLUS three complementary analyses
+(B trajectory shape, C persistence×disruption, View 7 8f-bridge). Everything is
+region-resolved: classification runs per (celltype, LEVEL, feature, arm) where
+level ∈ {whole + 13 brain regions}; whole = robust, regions flagged
+`regional_exploratory` (pool-age confounded, fewer donors).
 
 Two stress arms:
   - Early: early_vs_relaxed_per_age at {P1, 4W, 3mo}
   - Late:  late_vs_relaxed_per_age at {P1, 4W, 3mo}  (P1 carries pool confound)
 
-Persistence classes per gene (or pathway / TF) × celltype × arm:
+Persistence classes per gene (or pathway / TF) × celltype × level × arm:
   persistent      — DE at P1 AND 4W AND 3mo, SAME DIRECTION
   resolving_early — DE at P1 AND 4W, not 3mo
   established_late— DE at 4W AND 3mo, not P1
-  P1_only         — DE at P1 only
-  transient_4W    — DE at 4W only
-  emergent_3mo    — DE at 3mo only
+  P1_only / transient_4W / emergent_3mo — single-age
   P1_3mo_only     — DE at P1 AND 3mo, not 4W (unusual)
+  persistent_directionswap — all 3 ages but direction flips
   none            — not DE at any age
 
-Six views:
-  1. Gene-level persistence       — 08b DE → classification + trajectory plots
-  2. Pathway-level persistence    — 08c GSEA → same classification
-  3. TF-level persistence         — 08c TF activity → same
-  4. Effect-size trajectories     — top persistent features, log2FC/NES vs age
-  5. Early vs Late at each age    — hypergeometric overlap + rank-rank scatter
-  6. Cross-arm core signature     — features persistent in BOTH arms (paper table)
+Comprehensive views:
+  1. Gene-level persistence       (08b DE)
+  2. Pathway-level persistence    (08c GSEA, all collections)
+  3. TF-level persistence         (08c TF activity)
+  5. Early vs Late at each age    (hypergeom overlap + rank-rank)
+  6. Cross-arm core signature     (persistent in BOTH arms — paper table)
+
+Complementary analyses (added this session):
+  B. Trajectory shape             — amplifying / stable / attenuating across age
+                                    (column on the gene/pathway/TF tables)
+  C. Persistence × disruption     — 8g persistence × 8b developmental-disruption
+                                    classes; headline = persistent AND LOST
+  7. 8f-complementary focal module — all-Hallmark/immune pathway + broad-family TF
+                                    persistence flagged with 8f cross-tissue
+                                    concordance (the bridge), plus a leading-edge
+                                    deep-dive on the persistent immune pathways.
 
 Outputs:
-  plots/08g_cross_age/{01_gene,02_pathway,03_tf,04_early_vs_late,05_core_signature}/
+  plots/08g_cross_age/{01_gene,02_pathway,03_tf}_persistence/[<region>/]
+    04_early_vs_late/[<region>/]  05_core_signature/
+    06_persistence_x_disruption/  07_focal_8f_bridge/
   tables/08g_cross_age/
-    08g_gene_persistence.csv            KEY: gene × celltype × arm × class
-    08g_pathway_persistence.csv
-    08g_tf_persistence.csv
+    08g_gene_persistence.csv            KEY: gene × celltype × level × arm × class
+    08g_pathway_persistence.csv  08g_tf_persistence.csv
     08g_early_vs_late_overlap.csv
     08g_core_signature_genes.csv        cross-arm persistent (paper table)
     08g_core_signature_pathways.csv
+    08g_persistence_x_disruption.csv    [C]
+    08g_focal_pathway_persistence.csv   [A: 8f bridge]  08g_focal_tf_persistence.csv
+    08g_focal_leadingedge_drivers.csv   [A: LE drivers of persistent immune pathways]
 
 Usage:
-  uv run python scripts/08g_cross_age.py --config config/dev_split.yaml
   uv run python scripts/08g_cross_age.py --config config/brain.yaml
-  # placenta has incomplete factorial (no cross-age comparison possible) so
-  # this script is brain-only by design.
+  # placenta has incomplete factorial (no cross-age comparison) → brain-only.
 """
 
 import argparse
@@ -124,6 +137,15 @@ def parse_args():
                    help="Top N to label in trajectory plots (default 20)")
     p.add_argument("--top-n-plot", type=int, default=10,
                    help="Top N celltypes/categories per faceted plot (default 10)")
+    p.add_argument("--sex", type=str, default="combined",
+                   choices=["combined", "M", "F"],
+                   help="Sex stratum (default combined; M/F persistence is "
+                        "meaningless at n~2 and is not recommended)")
+    p.add_argument("--amplify-ratio", type=float, default=1.2,
+                   help="Trajectory shape: |effect_last|/|effect_first| >= this "
+                        "=> amplifying (default 1.2)")
+    p.add_argument("--attenuate-ratio", type=float, default=0.8,
+                   help="Trajectory shape: ratio <= this => attenuating (default 0.8)")
     return p.parse_args()
 
 
@@ -136,12 +158,19 @@ def _slug(s: str) -> str:
 
 
 def _extract_age(group_level):
-    if not isinstance(group_level, str):
-        return None
-    for part in group_level.split("_"):
-        if part.startswith("age-"):
-            return part[4:]
-    return None
+    """For the per-age stress contrasts 8g uses (early/late_vs_relaxed_per_age),
+    group_level holds the age DIRECTLY (P1 / 4W / 3mo) — not an 'age-4W' encoding.
+    Return as-is."""
+    return group_level if isinstance(group_level, str) else None
+
+
+def _filter_sex(sub, sex="combined"):
+    """Pin to one sex stratum. M/F persistence on n~2/group is meaningless, so
+    8g uses combined only by default. Mixing strata corrupts the per-age direction
+    map in classify_dataframe (last row wins), so this filter is mandatory."""
+    if sex is not None and "sex" in sub.columns:
+        sub = sub[sub["sex"] == sex]
+    return sub
 
 
 def load_tables(cfg):
@@ -150,11 +179,12 @@ def load_tables(cfg):
         "de": base / "08b_de" / "08b_de_results.csv",
         "pw": base / "08c_pathways" / "08c_pathway_results.csv",
         "tf": base / "08c_pathways" / "08c_tf_activity.csv",
+        "disruption": base / "08b_de" / "08b_developmental_disruption_genes.csv",
     }
     out = {}
     for kind, p in paths.items():
         if p.is_file():
-            df = pd.read_csv(p)
+            df = pd.read_csv(p, low_memory=False)
             print(f"  {kind}: {len(df):,} rows from {p.name}")
             out[kind] = df
         else:
@@ -163,28 +193,41 @@ def load_tables(cfg):
     return out
 
 
-def prep_de(df, contrast):
-    """Filter 08b DE to one contrast, add 'age', drop missing genes."""
+def prep_de(df, contrast, sex="combined"):
+    """Filter 08b DE to one contrast + sex stratum, add 'age', keep 'level',
+    drop missing genes. Level is RETAINED (not filtered) so persistence can be
+    classified per (celltype, level, gene) — whole + every brain region."""
     if df.empty or "contrast" not in df.columns:
         return pd.DataFrame()
     sub = df[df["contrast"] == contrast].copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub = _filter_sex(sub, sex)
     if sub.empty:
         return pd.DataFrame()
     sub = sub.dropna(subset=["gene", "stat"])
     sub["age"] = sub["group_level"].map(_extract_age)
+    if "level" not in sub.columns:
+        sub["level"] = "whole"
     return sub.dropna(subset=["age"])[
-        ["celltype", "gene", "stat", "padj", "log2FC", "age"]
+        ["celltype", "level", "gene", "stat", "padj", "log2FC", "age"]
     ]
 
 
-def prep_pw(df, contrast):
-    """Filter 08c pathway. 08c writes pathway name as 'source', FDR as 'FDR'."""
+def prep_pw(df, contrast, sex="combined"):
+    """Filter 08c pathway. 08c writes pathway name as 'source', FDR as 'FDR'.
+    Sex-filtered; 'level' retained for per-region persistence."""
     if df.empty or "contrast" not in df.columns:
         return pd.DataFrame()
     sub = df[df["contrast"] == contrast].copy()
     if sub.empty:
         return pd.DataFrame()
+    sub = _filter_sex(sub, sex)
+    if sub.empty:
+        return pd.DataFrame()
     sub["age"] = sub["group_level"].map(_extract_age)
+    if "level" not in sub.columns:
+        sub["level"] = "whole"
     rename = {}
     if "source" in sub.columns and "pathway" not in sub.columns:
         rename["source"] = "pathway"
@@ -195,15 +238,20 @@ def prep_pw(df, contrast):
     return sub.dropna(subset=["age"])
 
 
-def prep_tf(df, contrast):
+def prep_tf(df, contrast, sex="combined"):
     """Filter 08c TF activity. Columns: contrast, group_level, celltype, TF,
-    activity_score, pvalue, FDR, direction."""
+    activity_score, pvalue, FDR, direction. Sex-filtered; 'level' retained."""
     if df.empty or "contrast" not in df.columns:
         return pd.DataFrame()
     sub = df[df["contrast"] == contrast].copy()
     if sub.empty:
         return pd.DataFrame()
+    sub = _filter_sex(sub, sex)
+    if sub.empty:
+        return pd.DataFrame()
     sub["age"] = sub["group_level"].map(_extract_age)
+    if "level" not in sub.columns:
+        sub["level"] = "whole"
     if "FDR" in sub.columns and "padj" not in sub.columns:
         sub = sub.rename(columns={"FDR": "padj"})
     return sub.dropna(subset=["age"])
@@ -296,43 +344,42 @@ def run_view1_gene_persistence(de_df, args):
         return pd.DataFrame()
     all_rows = []
     for arm in ARMS:
-        sub = prep_de(de_df, arm["contrast"])
+        sub = prep_de(de_df, arm["contrast"], sex=args.sex)
         if sub.empty:
             print(f"  [skip] {arm['arm']} arm: no DE rows")
             continue
         sub = sub[sub["age"].isin(arm["ages"])].copy()
-        # Per (celltype, gene, age) — direction column
+        # Per (celltype, level, gene, age) — direction column
         sub["direction"] = "none"
         sig = (sub["padj"] < args.padj_cutoff) & \
               (sub["log2FC"].abs() > args.logfc_cutoff)
         sub.loc[sig & (sub["log2FC"] > 0), "direction"] = "up"
         sub.loc[sig & (sub["log2FC"] < 0), "direction"] = "down"
 
-        # Keep only genes that are DE at ≥1 age (otherwise the classification
-        # table is just 'none' for every untested gene — useless and huge).
-        any_sig = sub.groupby(["celltype", "gene"])["direction"].apply(
+        # Keep only (celltype, level, gene) that are DE at >=1 age.
+        any_sig = sub.groupby(["celltype", "level", "gene"])["direction"].apply(
             lambda x: (x != "none").any())
         keep_keys = any_sig[any_sig].index
-        sub = sub.set_index(["celltype", "gene"]).loc[
-            sub.set_index(["celltype", "gene"]).index.isin(keep_keys)].reset_index()
+        idx = sub.set_index(["celltype", "level", "gene"]).index
+        sub = sub.set_index(["celltype", "level", "gene"]).loc[
+            idx.isin(keep_keys)].reset_index()
 
         if sub.empty:
             continue
 
         classified = classify_dataframe(
             sub, age_col="age", direction_col="direction",
-            feature_cols=("celltype", "gene"))
+            feature_cols=("celltype", "level", "gene"))
         classified["arm"] = arm["arm"]
-        # Carry P1 confound flag for the Late arm (since P1 row entered)
         classified["confound_note"] = arm["confound_flags"].get("P1", "") \
             if arm["arm"] == "Late" else ""
         # Attach the actual log2FC per age (useful in output)
-        wide = (sub.pivot_table(index=["celltype", "gene"],
+        wide = (sub.pivot_table(index=["celltype", "level", "gene"],
                                  columns="age", values="log2FC",
                                  aggfunc="first")
                  .reset_index())
-        wide.columns = ["celltype", "gene"] + [f"{c}_log2FC" for c in wide.columns[2:]]
-        classified = classified.merge(wide, on=["celltype", "gene"], how="left")
+        wide.columns = ["celltype", "level", "gene"] + [f"{c}_log2FC" for c in wide.columns[3:]]
+        classified = classified.merge(wide, on=["celltype", "level", "gene"], how="left")
         all_rows.append(classified)
 
     if not all_rows:
@@ -355,7 +402,7 @@ def run_view2_pathway_persistence(pw_df, args):
         return pd.DataFrame()
     all_rows = []
     for arm in ARMS:
-        sub = prep_pw(pw_df, arm["contrast"])
+        sub = prep_pw(pw_df, arm["contrast"], sex=args.sex)
         if sub.empty:
             continue
         sub = sub[sub["age"].isin(arm["ages"])].copy()
@@ -364,29 +411,30 @@ def run_view2_pathway_persistence(pw_df, args):
         sub.loc[sig & (sub["NES"] > 0), "direction"] = "up"
         sub.loc[sig & (sub["NES"] < 0), "direction"] = "down"
 
-        any_sig = sub.groupby(["celltype", "pathway"])["direction"].apply(
+        any_sig = sub.groupby(["celltype", "level", "pathway"])["direction"].apply(
             lambda x: (x != "none").any())
         keep = any_sig[any_sig].index
-        sub = sub.set_index(["celltype", "pathway"]).loc[
-            sub.set_index(["celltype", "pathway"]).index.isin(keep)].reset_index()
+        idx = sub.set_index(["celltype", "level", "pathway"]).index
+        sub = sub.set_index(["celltype", "level", "pathway"]).loc[
+            idx.isin(keep)].reset_index()
         if sub.empty:
             continue
 
         classified = classify_dataframe(
             sub, age_col="age", direction_col="direction",
-            feature_cols=("celltype", "pathway"))
+            feature_cols=("celltype", "level", "pathway"))
         classified["arm"] = arm["arm"]
         classified["confound_note"] = arm["confound_flags"].get("P1", "") \
             if arm["arm"] == "Late" else ""
-        wide = (sub.pivot_table(index=["celltype", "pathway"],
+        wide = (sub.pivot_table(index=["celltype", "level", "pathway"],
                                  columns="age", values="NES", aggfunc="first")
                  .reset_index())
-        wide.columns = ["celltype", "pathway"] + [f"{c}_NES" for c in wide.columns[2:]]
+        wide.columns = ["celltype", "level", "pathway"] + [f"{c}_NES" for c in wide.columns[3:]]
         # Also carry collection column if present
         if "collection" in sub.columns:
-            coll = sub.groupby(["celltype", "pathway"])["collection"].first().reset_index()
-            classified = classified.merge(coll, on=["celltype", "pathway"], how="left")
-        classified = classified.merge(wide, on=["celltype", "pathway"], how="left")
+            coll = sub.groupby(["celltype", "level", "pathway"])["collection"].first().reset_index()
+            classified = classified.merge(coll, on=["celltype", "level", "pathway"], how="left")
+        classified = classified.merge(wide, on=["celltype", "level", "pathway"], how="left")
         all_rows.append(classified)
 
     if not all_rows:
@@ -410,7 +458,7 @@ def run_view3_tf_persistence(tf_df, args):
         return pd.DataFrame()
     all_rows = []
     for arm in ARMS:
-        sub = prep_tf(tf_df, arm["contrast"])
+        sub = prep_tf(tf_df, arm["contrast"], sex=args.sex)
         if sub.empty:
             continue
         sub = sub[sub["age"].isin(arm["ages"])].copy()
@@ -419,25 +467,26 @@ def run_view3_tf_persistence(tf_df, args):
         sub.loc[sig & (sub["activity_score"] > 0), "direction"] = "up"
         sub.loc[sig & (sub["activity_score"] < 0), "direction"] = "down"
 
-        any_sig = sub.groupby(["celltype", "TF"])["direction"].apply(
+        any_sig = sub.groupby(["celltype", "level", "TF"])["direction"].apply(
             lambda x: (x != "none").any())
         keep = any_sig[any_sig].index
-        sub = sub.set_index(["celltype", "TF"]).loc[
-            sub.set_index(["celltype", "TF"]).index.isin(keep)].reset_index()
+        idx = sub.set_index(["celltype", "level", "TF"]).index
+        sub = sub.set_index(["celltype", "level", "TF"]).loc[
+            idx.isin(keep)].reset_index()
         if sub.empty:
             continue
 
         classified = classify_dataframe(
             sub, age_col="age", direction_col="direction",
-            feature_cols=("celltype", "TF"))
+            feature_cols=("celltype", "level", "TF"))
         classified["arm"] = arm["arm"]
         classified["confound_note"] = arm["confound_flags"].get("P1", "") \
             if arm["arm"] == "Late" else ""
-        wide = (sub.pivot_table(index=["celltype", "TF"],
+        wide = (sub.pivot_table(index=["celltype", "level", "TF"],
                                  columns="age", values="activity_score",
                                  aggfunc="first").reset_index())
-        wide.columns = ["celltype", "TF"] + [f"{c}_activity" for c in wide.columns[2:]]
-        classified = classified.merge(wide, on=["celltype", "TF"], how="left")
+        wide.columns = ["celltype", "level", "TF"] + [f"{c}_activity" for c in wide.columns[3:]]
+        classified = classified.merge(wide, on=["celltype", "level", "TF"], how="left")
         all_rows.append(classified)
 
     if not all_rows:
@@ -461,77 +510,82 @@ def run_view5_early_vs_late(de_df, args):
     if de_df.empty:
         return pd.DataFrame()
 
-    es = prep_de(de_df, "early_vs_relaxed_per_age")
-    ls = prep_de(de_df, "late_vs_relaxed_per_age")
+    es = prep_de(de_df, "early_vs_relaxed_per_age", sex=args.sex)
+    ls = prep_de(de_df, "late_vs_relaxed_per_age", sex=args.sex)
     if es.empty or ls.empty:
         print("  [skip] missing ES or LS DE rows")
         return pd.DataFrame()
 
+    levels = sorted(set(es["level"]).union(ls["level"]))
     rows = []
-    for age in ("P1", "4W", "3mo"):
-        es_age = es[es["age"] == age]
-        ls_age = ls[ls["age"] == age]
-        if es_age.empty or ls_age.empty:
-            continue
-
-        common_cts = set(es_age["celltype"]) & set(ls_age["celltype"])
-        for ct in sorted(common_cts):
-            es_ct = es_age[es_age["celltype"] == ct]
-            ls_ct = ls_age[ls_age["celltype"] == ct]
-            universe = set(es_ct["gene"]) & set(ls_ct["gene"])
-            if len(universe) < 100:
+    for lvl in levels:
+        es_l = es[es["level"] == lvl]
+        ls_l = ls[ls["level"] == lvl]
+        for age in ("P1", "4W", "3mo"):
+            es_age = es_l[es_l["age"] == age]
+            ls_age = ls_l[ls_l["age"] == age]
+            if es_age.empty or ls_age.empty:
                 continue
-            n = len(universe)
 
-            es_sig = es_ct[(es_ct["padj"] < args.padj_cutoff) &
-                           (es_ct["log2FC"].abs() > args.logfc_cutoff)]
-            ls_sig = ls_ct[(ls_ct["padj"] < args.padj_cutoff) &
-                           (ls_ct["log2FC"].abs() > args.logfc_cutoff)]
+            common_cts = set(es_age["celltype"]) & set(ls_age["celltype"])
+            for ct in sorted(common_cts):
+                es_ct = es_age[es_age["celltype"] == ct]
+                ls_ct = ls_age[ls_age["celltype"] == ct]
+                universe = set(es_ct["gene"]) & set(ls_ct["gene"])
+                if len(universe) < 100:
+                    continue
+                n = len(universe)
 
-            es_up = set(es_sig.loc[es_sig["log2FC"] > 0, "gene"]) & universe
-            es_dn = set(es_sig.loc[es_sig["log2FC"] < 0, "gene"]) & universe
-            ls_up = set(ls_sig.loc[ls_sig["log2FC"] > 0, "gene"]) & universe
-            ls_dn = set(ls_sig.loc[ls_sig["log2FC"] < 0, "gene"]) & universe
+                es_sig = es_ct[(es_ct["padj"] < args.padj_cutoff) &
+                               (es_ct["log2FC"].abs() > args.logfc_cutoff)]
+                ls_sig = ls_ct[(ls_ct["padj"] < args.padj_cutoff) &
+                               (ls_ct["log2FC"].abs() > args.logfc_cutoff)]
 
-            for direction, (a_set, b_set) in [
-                ("concordant_up", (es_up, ls_up)),
-                ("concordant_down", (es_dn, ls_dn)),
-                ("discordant_es_up_ls_dn", (es_up, ls_dn)),
-                ("any_overlap", (es_up | es_dn, ls_up | ls_dn)),
-            ]:
-                overlap = a_set & b_set
-                if len(a_set) == 0 or len(b_set) == 0 or len(overlap) == 0:
-                    p = 1.0
-                else:
-                    p = float(hypergeom.sf(len(overlap) - 1, n,
-                                            len(a_set), len(b_set)))
+                es_up = set(es_sig.loc[es_sig["log2FC"] > 0, "gene"]) & universe
+                es_dn = set(es_sig.loc[es_sig["log2FC"] < 0, "gene"]) & universe
+                ls_up = set(ls_sig.loc[ls_sig["log2FC"] > 0, "gene"]) & universe
+                ls_dn = set(ls_sig.loc[ls_sig["log2FC"] < 0, "gene"]) & universe
 
-                # Full-list spearman ρ (signed Wald stats)
-                es_stats = es_ct.set_index("gene")["stat"]
-                ls_stats = ls_ct.set_index("gene")["stat"]
-                comm = es_stats.index.intersection(ls_stats.index)
-                rho, rho_p = (float("nan"), float("nan"))
-                if len(comm) >= 50:
-                    rho_val, rho_pv = spearmanr(es_stats.loc[comm], ls_stats.loc[comm])
-                    rho, rho_p = float(rho_val), float(rho_pv)
+                for direction, (a_set, b_set) in [
+                    ("concordant_up", (es_up, ls_up)),
+                    ("concordant_down", (es_dn, ls_dn)),
+                    ("discordant_es_up_ls_dn", (es_up, ls_dn)),
+                    ("any_overlap", (es_up | es_dn, ls_up | ls_dn)),
+                ]:
+                    overlap = a_set & b_set
+                    if len(a_set) == 0 or len(b_set) == 0 or len(overlap) == 0:
+                        p = 1.0
+                    else:
+                        p = float(hypergeom.sf(len(overlap) - 1, n,
+                                                len(a_set), len(b_set)))
 
-                rows.append({
-                    "age": age, "celltype": ct, "direction": direction,
-                    "n_overlap": len(overlap),
-                    "n_ES": len(a_set), "n_LS": len(b_set),
-                    "n_universe": n,
-                    "pvalue": p,
-                    "spearman_rho_full_stats": rho,
-                    "spearman_p_full_stats": rho_p,
-                    "overlap_genes": ";".join(sorted(overlap)[:50]),
-                })
+                    # Full-list spearman ρ (signed Wald stats)
+                    es_stats = es_ct.set_index("gene")["stat"]
+                    ls_stats = ls_ct.set_index("gene")["stat"]
+                    comm = es_stats.index.intersection(ls_stats.index)
+                    rho, rho_p = (float("nan"), float("nan"))
+                    if len(comm) >= 50:
+                        rho_val, rho_pv = spearmanr(es_stats.loc[comm], ls_stats.loc[comm])
+                        rho, rho_p = float(rho_val), float(rho_pv)
+
+                    rows.append({
+                        "level": lvl, "age": age, "celltype": ct,
+                        "direction": direction,
+                        "n_overlap": len(overlap),
+                        "n_ES": len(a_set), "n_LS": len(b_set),
+                        "n_universe": n,
+                        "pvalue": p,
+                        "spearman_rho_full_stats": rho,
+                        "spearman_p_full_stats": rho_p,
+                        "overlap_genes": ";".join(sorted(overlap)[:50]),
+                    })
 
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    # BH-FDR within (age, direction)
+    # BH-FDR within (level, age, direction)
     fdr_parts = []
-    for _, g in df.groupby(["age", "direction"]):
+    for _, g in df.groupby(["level", "age", "direction"]):
         _, fdr, _, _ = multipletests(g["pvalue"].fillna(1.0), method="fdr_bh")
         fdr_parts.append(pd.Series(fdr, index=g.index))
     df["fdr"] = pd.concat(fdr_parts)
@@ -574,8 +628,8 @@ def run_view6_core_signature(gene_persist, pw_persist):
             results[kind] = pd.DataFrame()
             continue
 
-        # Join on (celltype, feature) and require same direction in both arms
-        key_cols = ["celltype", feature_col]
+        # Join on (celltype, level, feature) and require same direction in both arms
+        key_cols = ["celltype", "level", feature_col]
         early_keyed = early[key_cols + ["P1_dir", "4W_dir", "3mo_dir"]].rename(
             columns={c: f"Early_{c}" for c in ("P1_dir", "4W_dir", "3mo_dir")})
         late_keyed = late[key_cols + ["P1_dir", "4W_dir", "3mo_dir"]].rename(
@@ -882,6 +936,372 @@ def plot_core_signature(core_genes, core_pw, plots_root, top_n_label=30):
 
 
 # ============================================================================
+# B: Trajectory shape (amplifying / attenuating / stable)
+# ============================================================================
+
+def add_trajectory_shape(df, effect_prefix, args):
+    """Add a 'trajectory_shape' column to a persistence table.
+
+    For features significant at >=2 ages with CONSISTENT direction, compare the
+    |effect| at the first vs last significant age (age order P1 < 4W < 3mo):
+        amplifying  ratio >= amplify_ratio (effect grows across development)
+        attenuating ratio <= attenuate_ratio (effect shrinks / resolving)
+        stable      otherwise
+    Others: 'single_age' (<2 sig ages), 'directionswap', 'undetermined'.
+    """
+    if df.empty:
+        return df
+    ages = ["P1", "4W", "3mo"]
+    eff = {a: f"{a}_{effect_prefix}" for a in ages}
+    for a in ages:
+        if eff[a] not in df.columns:
+            df[eff[a]] = np.nan
+    shapes = []
+    for _, r in df.iterrows():
+        sig_ages = [a for a in ages if str(r.get(f"{a}_dir", "none")) != "none"]
+        if len(sig_ages) < 2:
+            shapes.append("single_age"); continue
+        if len({r[f"{a}_dir"] for a in sig_ages}) > 1:
+            shapes.append("directionswap"); continue
+        e0 = abs(float(r.get(eff[sig_ages[0]], np.nan)))
+        e1 = abs(float(r.get(eff[sig_ages[-1]], np.nan)))
+        if not (np.isfinite(e0) and np.isfinite(e1)) or e0 == 0:
+            shapes.append("undetermined"); continue
+        ratio = e1 / e0
+        if ratio >= args.amplify_ratio:
+            shapes.append("amplifying")
+        elif ratio <= args.attenuate_ratio:
+            shapes.append("attenuating")
+        else:
+            shapes.append("stable")
+    df = df.copy()
+    df["trajectory_shape"] = shapes
+    return df
+
+
+# ============================================================================
+# C: Persistence x developmental-disruption cross-reference
+# ============================================================================
+
+def run_persistence_x_disruption(gene_df, disruption_df, args):
+    """Cross-reference 8g stress-persistence classes against the 8b developmental
+    disruption classes (LOST / GAINED / universal / ...).
+
+    NOTE: links two DIFFERENT contrasts — 8g uses the per-age stress contrasts
+    (early/late_vs_relaxed_per_age); 8b disruption uses within_group_across_age
+    (developmental trajectory). The interesting intersection is genes that are
+    BOTH persistently stress-DE (8g 'persistent') AND developmentally LOST under
+    stress (8b 'relaxed_only'). Matched on (celltype, level, gene), sex=combined.
+    """
+    print("\n[View C] Persistence x developmental disruption")
+    if gene_df.empty or disruption_df.empty:
+        print("  [skip] need both gene persistence and 08b disruption table")
+        return pd.DataFrame()
+
+    d = disruption_df.copy()
+    if "sex" in d.columns:
+        d = d[d["sex"] == "combined"]
+    # 08b disruption stores the LOST/GAINED class in the 'direction' column
+    # (values: universal / relaxed_only=LOST / stress_shared=GAINED / early_only /
+    # late_only). Note this 'direction' is the disruption CLASS, not up/down.
+    class_col = next((c for c in ["direction", "direction_class", "disruption_class",
+                                   "class", "category"] if c in d.columns), None)
+    if class_col is None:
+        raise ValueError(
+            "08b disruption table has no recognizable class column "
+            f"(looked for direction/direction_class/...); got {list(d.columns)}. "
+            "Cannot run persistence x disruption — fix the column mapping rather "
+            "than skipping silently.")
+    expected = {"universal", "relaxed_only", "stress_shared", "early_only", "late_only"}
+    if not (set(d[class_col].dropna().unique()) & expected):
+        raise ValueError(
+            f"08b disruption '{class_col}' values {sorted(set(d[class_col].dropna().unique()))[:6]} "
+            f"don't match expected disruption classes {sorted(expected)}. Refusing to "
+            "proceed on a mismatched schema.")
+    if "level" not in d.columns:
+        d["level"] = "whole"
+    keep = [c for c in ["celltype", "level", "gene", class_col] if c in d.columns]
+    d = d[keep].rename(columns={class_col: "disruption_class"})
+
+    on = [c for c in ["celltype", "level", "gene"] if c in d.columns]
+    g = gene_df[["arm", "celltype", "level", "gene",
+                 "persistence_class", "direction_consistent"]]
+    merged = g.merge(d, on=on, how="inner")
+    if merged.empty:
+        print("  [warn] no (celltype, level, gene) overlap between 8g and 8b disruption")
+        return pd.DataFrame()
+
+    merged["level_flag"] = np.where(merged["level"] == "whole",
+                                    "robust", "regional_exploratory")
+    # Headline subset: persistent stress effect AND developmentally LOST
+    merged["persistent_and_LOST"] = (
+        (merged["persistence_class"] == "persistent") &
+        (merged["disruption_class"] == "relaxed_only")
+    )
+    n_pl = int(merged["persistent_and_LOST"].sum())
+    print(f"  {len(merged):,} matched (gene,celltype,level,arm) rows; "
+          f"{n_pl:,} persistent-AND-developmentally-LOST")
+    ct = (merged.groupby(["arm", "persistence_class", "disruption_class"])
+          .size().reset_index(name="n"))
+    print("  Top persistence x disruption cells:")
+    print(ct.sort_values("n", ascending=False).head(8).to_string(index=False))
+    return merged
+
+
+# ============================================================================
+# A: View 7 — 8f-complementary focal module
+# ============================================================================
+
+# Broad regulator families (regex on TF symbol) — immune / IEG-AP1 / stress-GR
+FOCAL_TF_FAMILIES = ["IRF", "STAT", "NFKB", "REL", "JUN", "FOS", "FOSL",
+                     "EGR", "ATF", "CEBP", "SPI", "RUNX", "NFIL3", "BCL3", "NR3C"]
+# Immune/inflammatory pathway keywords for the leading-edge deep-dive
+IMMUNE_PATHWAY_KEYWORDS = ["INTERFERON", "IFN", "COMPLEMENT", "INFLAMMAT",
+                           "CYTOKINE", "TNF", "NFKB", "IL2_STAT", "IL6", "JAK_STAT",
+                           "INNATE", "ALLOGRAFT", "CHEMOKINE", "ANTIGEN", "ISG"]
+
+
+def _load_8f_concordant(cfg, kind):
+    """Return the 8f concordance table (pathway or TF) if it exists, else empty.
+    kind in {'pathway','tf'}."""
+    fname = ("08f_pathway_concordance.csv" if kind == "pathway"
+             else "08f_tf_concordance.csv")
+    p = Path(cfg["results_dir"]) / "tables" / "08f_cross_tissue" / fname
+    if not p.is_file():
+        print(f"  [info] 8f table not found ({fname}); cross-tissue flag skipped")
+        return pd.DataFrame()
+    df = pd.read_csv(p, low_memory=False)
+    return df[df["concordance_class"].astype(str).str.startswith("concordant")]
+
+
+def run_view7_focal(gene_df, pw_df, tf_df, cfg, args):
+    """8f-complementary focal module:
+      (1) Pathway persistence (all Hallmark MH + immune M2/M5) flagged with 8f
+          cross-tissue concordance — the headline 'both' set.
+      (2) TF persistence restricted to broad regulator families, 8f-flagged.
+      (3) Leading-edge drivers of the persistent immune pathways (8c LE, chunked).
+    Returns (focal_pw, focal_tf, le_drivers).
+    """
+    print("\n[View 7] 8f-complementary focal module")
+    focal_pw = pd.DataFrame()
+    focal_tf = pd.DataFrame()
+    le_drivers = pd.DataFrame()
+
+    # ---- (1) Pathways: MH + immune M2/M5, with 8f concordance flag ----
+    if not pw_df.empty:
+        fp = pw_df.copy()
+        is_mh = fp.get("collection", pd.Series("", index=fp.index)) == "MH"
+        is_immune = fp["pathway"].str.upper().str.contains(
+            "|".join(IMMUNE_PATHWAY_KEYWORDS), na=False)
+        fp = fp[is_mh | is_immune].copy()
+        if not fp.empty:
+            conc = _load_8f_concordant(cfg, "pathway")
+            if not conc.empty:
+                # 8f keys: arm, brain_level, brain_celltype, pathway
+                conc_keyed = conc.rename(columns={"brain_level": "level",
+                                                  "brain_celltype": "celltype"})
+                key = ["arm", "level", "pathway"]
+                have = [k for k in key if k in conc_keyed.columns]
+                n8f = (conc_keyed.groupby(have).size()
+                       .reset_index(name="n_8f_concordant"))
+                fp = fp.merge(n8f, on=have, how="left")
+                fp["n_8f_concordant"] = fp["n_8f_concordant"].fillna(0).astype(int)
+            else:
+                fp["n_8f_concordant"] = 0
+            fp["cross_tissue_8f"] = fp["n_8f_concordant"] > 0
+            fp["both_persistent_and_8f"] = (
+                (fp["persistence_class"] == "persistent") & fp["cross_tissue_8f"])
+            n_both = int(fp["both_persistent_and_8f"].sum())
+            print(f"  Focal pathways: {len(fp):,} rows; "
+                  f"{n_both:,} BOTH within-brain-persistent AND 8f cross-tissue-concordant")
+            focal_pw = fp
+
+    # ---- (2) TFs: broad regulator families, 8f-flagged ----
+    if not tf_df.empty:
+        ft = tf_df[tf_df["TF"].str.upper().str.contains(
+            "|".join(FOCAL_TF_FAMILIES), na=False)].copy()
+        if not ft.empty:
+            conc = _load_8f_concordant(cfg, "tf")
+            if not conc.empty:
+                conc_keyed = conc.rename(columns={"brain_level": "level",
+                                                  "brain_celltype": "celltype"})
+                key = [k for k in ["arm", "level", "TF"] if k in conc_keyed.columns]
+                n8f = conc_keyed.groupby(key).size().reset_index(name="n_8f_concordant")
+                ft = ft.merge(n8f, on=key, how="left")
+                ft["n_8f_concordant"] = ft["n_8f_concordant"].fillna(0).astype(int)
+            else:
+                ft["n_8f_concordant"] = 0
+            ft["cross_tissue_8f"] = ft["n_8f_concordant"] > 0
+            print(f"  Focal TFs: {len(ft):,} rows (families: {', '.join(FOCAL_TF_FAMILIES)})")
+            focal_tf = ft
+
+    # ---- (3) Leading-edge drivers of persistent immune pathways ----
+    if not focal_pw.empty:
+        persistent_immune = focal_pw[
+            (focal_pw["persistence_class"] == "persistent") &
+            (focal_pw["pathway"].str.upper().str.contains(
+                "|".join(IMMUNE_PATHWAY_KEYWORDS), na=False))]
+        targets = sorted(persistent_immune["pathway"].unique())
+        if targets:
+            le_path = (Path(cfg["results_dir"]) / "tables" / "08c_pathways" /
+                       "08c_pathway_leading_edge.csv")
+            if le_path.is_file():
+                print(f"  Leading-edge dive over {len(targets)} persistent immune "
+                      f"pathways (chunked read of {le_path.name})")
+                le_drivers = _leading_edge_drivers(le_path, set(targets), args)
+            else:
+                print(f"  [info] {le_path.name} not found; leading-edge dive skipped")
+
+    return focal_pw, focal_tf, le_drivers
+
+
+def _leading_edge_drivers(le_path, target_pathways, args, chunksize=2_000_000):
+    """Chunked read of the (large) 08c leading-edge table. For the target
+    pathways at sex=combined, count how often each gene appears in the leading
+    edge across (celltype, level, age), per pathway. Returns a tidy ranking."""
+    cols = ["sex", "level", "celltype", "group_level", "collection",
+            "pathway", "gene", "log2FC", "direction"]
+    keep = []
+    for ch in pd.read_csv(le_path, usecols=lambda c: c in cols,
+                          chunksize=chunksize, low_memory=False):
+        if "sex" in ch.columns:
+            ch = ch[ch["sex"] == "combined"]
+        ch = ch[ch["pathway"].isin(target_pathways)]
+        if not ch.empty:
+            keep.append(ch)
+    if not keep:
+        return pd.DataFrame()
+    le = pd.concat(keep, ignore_index=True)
+    # Recurrence of each gene per pathway (across celltype/level/age)
+    rec = (le.groupby(["pathway", "gene"])
+           .agg(n_occurrences=("gene", "size"),
+                n_levels=("level", "nunique") if "level" in le.columns else ("gene", "size"),
+                n_celltypes=("celltype", "nunique") if "celltype" in le.columns else ("gene", "size"),
+                mean_log2FC=("log2FC", "mean") if "log2FC" in le.columns else ("gene", "size"))
+           .reset_index().sort_values(["pathway", "n_occurrences"],
+                                      ascending=[True, False]))
+    return rec
+
+
+def plot_focal_pathway_persistence(focal_pw, plots_root):
+    """Heatmap per arm: focal pathway x celltype, cell = persistence rank,
+    annotated with * where also 8f cross-tissue concordant. Whole level only
+    (the robust panel); regional rows stay in the CSV."""
+    if focal_pw.empty:
+        return
+    df = focal_pw[focal_pw["level"] == "whole"]
+    if df.empty:
+        return
+    for arm in sorted(df["arm"].unique()):
+        a = df[df["arm"] == arm].copy()
+        a["rank"] = a["persistence_class"].map(PERSISTENCE_RANK)
+        # keep pathways that are persistent or near (rank<=2) in >=1 celltype
+        keep_pw = a[a["rank"] <= 2]["pathway"].unique()
+        a = a[a["pathway"].isin(keep_pw)]
+        if a.empty:
+            continue
+        mat = a.pivot_table(index="pathway", columns="celltype",
+                            values="rank", aggfunc="min")
+        flag = a.pivot_table(index="pathway", columns="celltype",
+                             values="cross_tissue_8f", aggfunc="max")
+        mat = mat.reindex(index=sorted(mat.index))
+        fig, ax = plt.subplots(figsize=(max(6, mat.shape[1] * 0.6 + 3),
+                                        max(4, mat.shape[0] * 0.4 + 2)))
+        im = ax.imshow(mat.values, aspect="auto", cmap="viridis_r",
+                       vmin=0, vmax=7)
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label("persistence rank (0=persistent ... 7=none)")
+        ax.set_xticks(range(mat.shape[1]))
+        ax.set_xticklabels(mat.columns, rotation=45, ha="right", fontsize=7)
+        ax.set_yticks(range(mat.shape[0]))
+        ax.set_yticklabels(mat.index, fontsize=6)
+        # star where 8f-concordant
+        for i, pw in enumerate(mat.index):
+            for j, ct in enumerate(mat.columns):
+                try:
+                    if bool(flag.loc[pw, ct]) and np.isfinite(mat.values[i, j]):
+                        ax.text(j, i, "*", ha="center", va="center",
+                                color="white", fontsize=9, fontweight="bold")
+                except (KeyError, TypeError):
+                    pass
+        ax.set_title(f"Focal pathway persistence — {arm} arm [whole]\n"
+                     f"(* = also cross-tissue concordant in 8f; darker = more persistent)",
+                     fontsize=9)
+        _save_fig(fig, plots_root / f"focal_pathway_persistence_{arm}.png")
+
+
+def plot_trajectory_shape(persist_df, kind_label, plots_root):
+    """Stacked bar of trajectory_shape composition within each persistence class."""
+    if persist_df.empty or "trajectory_shape" not in persist_df.columns:
+        return
+    df = persist_df[persist_df["level"] == "whole"]
+    if df.empty:
+        return
+    shape_order = ["amplifying", "stable", "attenuating",
+                   "directionswap", "single_age", "undetermined"]
+    shape_colors = {"amplifying": "#d73027", "stable": "#cccccc",
+                    "attenuating": "#4575b4", "directionswap": "#984ea3",
+                    "single_age": "#eeeeee", "undetermined": "#fdae61"}
+    for arm in sorted(df["arm"].unique()):
+        a = df[df["arm"] == arm]
+        ct = (a.groupby(["persistence_class", "trajectory_shape"])
+              .size().unstack(fill_value=0))
+        classes = [c for c in PERSISTENCE_RANK if c in ct.index]
+        ct = ct.reindex(index=classes)
+        shapes = [s for s in shape_order if s in ct.columns]
+        ct = ct[shapes]
+        fig, ax = plt.subplots(figsize=(8, 5))
+        bottom = np.zeros(len(ct))
+        for s in shapes:
+            ax.bar(range(len(ct)), ct[s].values, bottom=bottom,
+                   label=s, color=shape_colors.get(s, "#999999"))
+            bottom += ct[s].values
+        ax.set_xticks(range(len(ct)))
+        ax.set_xticklabels(ct.index, rotation=30, ha="right", fontsize=8)
+        ax.set_ylabel(f"# {kind_label}")
+        ax.legend(fontsize=7, ncol=2)
+        ax.set_title(f"Trajectory shape within persistence class — {arm} arm "
+                     f"[whole]\n(amplifying = effect grows P1→3mo; attenuating = resolving)",
+                     fontsize=9)
+        _save_fig(fig, plots_root / f"trajectory_shape_{kind_label}_{arm}.png")
+
+
+def plot_persistence_x_disruption(cross_df, plots_root):
+    """Contingency heatmap: 8g persistence_class x 8b disruption_class, per arm."""
+    if cross_df.empty:
+        return
+    df = cross_df[cross_df["level"] == "whole"]
+    if df.empty:
+        return
+    for arm in sorted(df["arm"].unique()):
+        a = df[df["arm"] == arm]
+        ct = (a.groupby(["persistence_class", "disruption_class"])
+              .size().unstack(fill_value=0))
+        classes = [c for c in PERSISTENCE_RANK if c in ct.index]
+        ct = ct.reindex(index=classes).fillna(0)
+        if ct.empty:
+            continue
+        fig, ax = plt.subplots(figsize=(max(6, ct.shape[1] * 1.1 + 2),
+                                        max(4, ct.shape[0] * 0.5 + 2)))
+        im = ax.imshow(ct.values, aspect="auto", cmap="Reds")
+        plt.colorbar(im, ax=ax, label="# genes")
+        ax.set_xticks(range(ct.shape[1]))
+        ax.set_xticklabels(ct.columns, rotation=30, ha="right", fontsize=8)
+        ax.set_yticks(range(ct.shape[0]))
+        ax.set_yticklabels(ct.index, fontsize=8)
+        for i in range(ct.shape[0]):
+            for j in range(ct.shape[1]):
+                v = int(ct.values[i, j])
+                if v:
+                    ax.text(j, i, str(v), ha="center", va="center", fontsize=7,
+                            color="white" if v > ct.values.max() * 0.6 else "black")
+        ax.set_title(f"Stress persistence (8g) × developmental disruption (8b) — "
+                     f"{arm} arm [whole]\n(persistent × relaxed_only = durable stress "
+                     f"effect on a developmentally-lost gene)", fontsize=9)
+        _save_fig(fig, plots_root / f"persistence_x_disruption_{arm}.png")
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -906,65 +1326,100 @@ def main():
     print("\n[Loading] 8b DE + 8c pathway/TF tables")
     tables = load_tables(cfg)
 
-    # --- Run six views ---
+    # --- Run comprehensive persistence views (1-3,5,6) ---
     gene_df = run_view1_gene_persistence(tables["de"], args)
     pw_df = run_view2_pathway_persistence(tables["pw"], args)
     tf_df = run_view3_tf_persistence(tables["tf"], args)
+
+    # --- B: trajectory shape on each comprehensive table ---
+    gene_df = add_trajectory_shape(gene_df, "log2FC", args)
+    pw_df = add_trajectory_shape(pw_df, "NES", args)
+    tf_df = add_trajectory_shape(tf_df, "activity", args)
+
     ovr_df = run_view5_early_vs_late(tables["de"], args)
     core_genes, core_pw = run_view6_core_signature(gene_df, pw_df)
 
+    # --- C: persistence x developmental disruption ---
+    cross_df = run_persistence_x_disruption(gene_df, tables["disruption"], args)
+
+    # --- A: View 7 focal (8f-complementary) ---
+    focal_pw, focal_tf, le_drivers = run_view7_focal(gene_df, pw_df, tf_df, cfg, args)
+
+    # --- level_flag: whole = robust, regions = exploratory (applied uniformly) ---
+    def _flag(df):
+        if not df.empty and "level" in df.columns:
+            df = df.copy()
+            df["level_flag"] = np.where(df["level"] == "whole",
+                                        "robust", "regional_exploratory")
+        return df
+    gene_df, pw_df, tf_df, ovr_df = (_flag(gene_df), _flag(pw_df),
+                                     _flag(tf_df), _flag(ovr_df))
+    core_genes, core_pw, focal_pw, focal_tf = (_flag(core_genes), _flag(core_pw),
+                                               _flag(focal_pw), _flag(focal_tf))
+
     # --- Persist tables ---
     print("\n[Tables]")
-    if not gene_df.empty:
-        gene_df.to_csv(tdir / "08g_gene_persistence.csv", index=False)
-        print(f"  Saved: 08g_gene_persistence.csv  ({len(gene_df):,} rows)")
-    if not pw_df.empty:
-        pw_df.to_csv(tdir / "08g_pathway_persistence.csv", index=False)
-        print(f"  Saved: 08g_pathway_persistence.csv  ({len(pw_df):,} rows)")
-    if not tf_df.empty:
-        tf_df.to_csv(tdir / "08g_tf_persistence.csv", index=False)
-        print(f"  Saved: 08g_tf_persistence.csv  ({len(tf_df):,} rows)")
-    if not ovr_df.empty:
-        ovr_df.to_csv(tdir / "08g_early_vs_late_overlap.csv", index=False)
-        print(f"  Saved: 08g_early_vs_late_overlap.csv  ({len(ovr_df):,} rows)")
+    def _save(df, name, note=""):
+        if df is not None and not df.empty:
+            df.to_csv(tdir / name, index=False)
+            print(f"  Saved: {name}  ({len(df):,} rows){note}")
+    _save(gene_df, "08g_gene_persistence.csv")
+    _save(pw_df, "08g_pathway_persistence.csv")
+    _save(tf_df, "08g_tf_persistence.csv")
+    _save(ovr_df, "08g_early_vs_late_overlap.csv")
     if not core_genes.empty:
         core_genes.to_csv(tdir / "08g_core_signature_genes.csv", index=False)
         n_core = core_genes["core_signature"].sum() if "core_signature" in core_genes.columns else len(core_genes)
         print(f"  Saved: 08g_core_signature_genes.csv  ({n_core:,} core) ← PAPER TABLE")
-    if not core_pw.empty:
-        core_pw.to_csv(tdir / "08g_core_signature_pathways.csv", index=False)
-        n_core = core_pw["core_signature"].sum() if "core_signature" in core_pw.columns else len(core_pw)
-        print(f"  Saved: 08g_core_signature_pathways.csv  ({n_core:,} core)")
+    _save(core_pw, "08g_core_signature_pathways.csv")
+    # New analyses
+    _save(cross_df, "08g_persistence_x_disruption.csv", "  [C]")
+    _save(focal_pw, "08g_focal_pathway_persistence.csv", "  [A: 8f bridge]")
+    _save(focal_tf, "08g_focal_tf_persistence.csv", "  [A]")
+    _save(le_drivers, "08g_focal_leadingedge_drivers.csv", "  [A: LE drivers]")
 
     # --- Plots ---
     print("\n[Plots]")
-    if not gene_df.empty:
-        gene_dir = pdir_root / "01_gene_persistence"
-        plot_persistence_class_barplot(gene_df, "genes", gene_dir)
-        plot_persistence_heatmap(gene_df, "gene", "genes", gene_dir,
-                                  top_n_label=50)
-        plot_effect_size_trajectory(gene_df, "gene", "log2FC", "genes",
-                                     gene_dir, top_n_label=args.top_n_label)
-    if not pw_df.empty:
-        pw_dir = pdir_root / "02_pathway_persistence"
-        plot_persistence_class_barplot(pw_df, "pathways", pw_dir)
-        plot_persistence_heatmap(pw_df, "pathway", "pathways", pw_dir,
-                                  top_n_label=40)
-        plot_effect_size_trajectory(pw_df, "pathway", "NES", "pathways",
-                                     pw_dir, top_n_label=args.top_n_label)
-    if not tf_df.empty:
-        tf_dir = pdir_root / "03_tf_persistence"
-        plot_persistence_class_barplot(tf_df, "TFs", tf_dir)
-        plot_persistence_heatmap(tf_df, "TF", "TFs", tf_dir, top_n_label=40)
-        plot_effect_size_trajectory(tf_df, "TF", "activity", "TFs",
-                                     tf_dir, top_n_label=args.top_n_label)
+    # Comprehensive persistence (1-3): whole in the main dir, each region nested.
+    def _levels(df):
+        return ["whole"] + [l for l in sorted(df["level"].unique()) if l != "whole"] \
+            if (not df.empty and "level" in df.columns) else ["whole"]
+
+    for df, label, feat, eff, num in (
+        (gene_df, "genes", "gene", "log2FC", "01_gene_persistence"),
+        (pw_df, "pathways", "pathway", "NES", "02_pathway_persistence"),
+        (tf_df, "TFs", "TF", "activity", "03_tf_persistence"),
+    ):
+        if df.empty:
+            continue
+        base = pdir_root / num
+        for lvl in _levels(df):
+            sub = df[df["level"] == lvl]
+            if sub.empty:
+                continue
+            ldir = base if lvl == "whole" else base / _slug(lvl)
+            plot_persistence_class_barplot(sub, label, ldir)
+            plot_persistence_heatmap(sub, feat, label, ldir, top_n_label=50)
+            plot_effect_size_trajectory(sub, feat, eff, label, ldir,
+                                        top_n_label=args.top_n_label)
+        # B: trajectory-shape composition (whole only)
+        plot_trajectory_shape(df, label, base)
+
     if not ovr_df.empty:
-        plot_early_vs_late_overlap(ovr_df, pdir_root / "04_early_vs_late",
-                                    top_n_label=args.top_n_label)
+        for lvl in _levels(ovr_df):
+            sub = ovr_df[ovr_df["level"] == lvl]
+            if sub.empty:
+                continue
+            ld = pdir_root / "04_early_vs_late"
+            ld = ld if lvl == "whole" else ld / _slug(lvl)
+            plot_early_vs_late_overlap(sub, ld, top_n_label=args.top_n_label)
     if not core_genes.empty or not core_pw.empty:
         plot_core_signature(core_genes, core_pw,
-                             pdir_root / "05_core_signature",
-                             top_n_label=args.top_n_label)
+                            pdir_root / "05_core_signature",
+                            top_n_label=args.top_n_label)
+    # C + A plots
+    plot_persistence_x_disruption(cross_df, pdir_root / "06_persistence_x_disruption")
+    plot_focal_pathway_persistence(focal_pw, pdir_root / "07_focal_8f_bridge")
 
     # --- Summary ---
     print(f"\n{'='*60}")
@@ -972,14 +1427,21 @@ def main():
     print(f"  Tables: {tdir}")
     print(f"  Plots:  {pdir_root}")
     if not gene_df.empty:
-        for arm in sorted(gene_df["arm"].unique()):
-            persist = (gene_df["arm"] == arm) & \
-                      (gene_df["persistence_class"] == "persistent")
-            print(f"  {arm} arm: {persist.sum():,} persistent (gene, celltype) calls")
+        whole = gene_df[gene_df["level"] == "whole"]
+        for arm in sorted(whole["arm"].unique()):
+            n = ((whole["arm"] == arm) &
+                 (whole["persistence_class"] == "persistent")).sum()
+            print(f"  {arm} arm [whole]: {n:,} persistent (gene, celltype) calls")
     if not core_genes.empty and "core_signature" in core_genes.columns:
         n_core = int(core_genes["core_signature"].sum())
         print(f"\n  PAPER TABLE: {n_core:,} core-signature genes (persistent in BOTH arms)")
-        print(f"  See: tables/08g_cross_age/08g_core_signature_genes.csv")
+    if not focal_pw.empty and "both_persistent_and_8f" in focal_pw.columns:
+        n_both = int(focal_pw["both_persistent_and_8f"].sum())
+        print(f"  8f BRIDGE: {n_both:,} pathway calls BOTH within-brain-persistent "
+              f"AND cross-tissue-concordant (8f)")
+    if not cross_df.empty and "persistent_and_LOST" in cross_df.columns:
+        print(f"  8b CROSS-REF: {int(cross_df['persistent_and_LOST'].sum()):,} "
+              f"persistent-AND-developmentally-LOST gene calls")
     print()
 
 

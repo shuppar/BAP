@@ -1,0 +1,71 @@
+
+
+# ============================================================================
+# PLACENTA — compartment-level cross-species map (Phase 9 h09e)
+# ============================================================================
+# Separate schema from the brain ARM-A/B blocks above (those are unchanged).
+# h09e reads THIS key only. Bridge level is COMPARTMENT, not subtype: mouse and
+# human trophoblast subtypes have no 1:1 homology (divergent placentation), so the
+# RRHO compares trophoblast<->trophoblast, immune<->immune, etc.
+#
+# Comparison: mouse E18.5 Late-vs-Relaxed  <->  human term obese-vs-lean
+#   (Gunter-Rahman GSE271976). E12.5 / Marsh dropped (no human stress contrast
+#   to RRHO against). other_extraembryonic + unassigned excluded (no counterpart).
+
+placenta_compartments:
+  # --- mouse celltype_majority -> compartment ---
+  mouse:
+    SynTI: trophoblast            # syncytiotrophoblast layer I
+    SynTII: trophoblast           # syncytiotrophoblast layer II
+    S-TGC: trophoblast            # sinusoidal trophoblast giant cell
+    SpT: trophoblast              # spongiotrophoblast
+    JZP: trophoblast              # junctional-zone progenitor
+    LaTP: trophoblast             # labyrinth trophoblast progenitor
+    GC: trophoblast               # glycogen cell
+    DSC: decidua_stromal          # decidual stromal cell
+    Mesenchyme: decidua_stromal
+    Endothelium: vascular
+    Lymphatic EC: vascular
+    B cell: immune
+    NK: immune
+    Myeloid: immune
+    Lymphoid_mixed: immune
+    Megakaryocyte: immune
+    Erythrocyte: erythroid
+    Epithelial: other_extraembryonic        # excluded from RRHO (no human counterpart)
+    Parietal endoderm: other_extraembryonic
+    Yolk sac epithelial: other_extraembryonic
+    # unassigned_immune dropped upstream by the Phase 8 unassigned rule
+
+  # --- human h09d subtype -> compartment (also carried in obs['compartment'];
+  #     listed for provenance / explicit auditing) ---
+  human:
+    npVCT: trophoblast
+    pVCT: trophoblast
+    fusing_VCT: trophoblast
+    SCT: trophoblast
+    SCT_FLT1: trophoblast
+    SCT_BACE2: trophoblast
+    SCT_PTCHD4: trophoblast
+    SCT_ECM: trophoblast
+    EVT: trophoblast
+    dS: decidua_stromal
+    FB1: decidua_stromal
+    FB2: decidua_stromal
+    EGC: decidua_stromal
+    Endo: vascular
+    Endo_M: vascular
+    LED: vascular
+    PV: vascular
+    dNK: immune
+    NK_CD16: immune
+    T: immune
+    B: immune
+    dM: immune
+    BM: immune
+    FM: immune
+    Eryth: erythroid
+
+  # compartments tested in the RRHO (both species must have the compartment)
+  rrho_compartments: [trophoblast, decidua_stromal, vascular, immune, erythroid]
+  exclude: [other_extraembryonic]

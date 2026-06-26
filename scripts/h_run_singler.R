@@ -15,6 +15,7 @@
 
 suppressPackageStartupMessages({
   library(optparse); library(Matrix); library(SingleR); library(SummarizedExperiment)
+  library(BiocParallel)
 })
 
 opt <- parse_args(OptionParser(option_list = list(
@@ -24,6 +25,7 @@ opt <- parse_args(OptionParser(option_list = list(
   make_option("--ref-mtx", type = "character"),
   make_option("--ref-genes", type = "character"),
   make_option("--ref-labels", type = "character"),
+  make_option("--n-jobs", type = "integer", default = 8),
   make_option("--output", type = "character")
 )))
 
@@ -49,8 +51,10 @@ cat(sprintf("[singler] %d shared genes; query %d cells, ref %d cells\n",
 q <- q[common, , drop = FALSE]
 r <- r[common, , drop = FALSE]
 
+bp <- if (opt$`n-jobs` > 1) MulticoreParam(workers = opt$`n-jobs`) else SerialParam()
+cat(sprintf("[singler] running with %d worker(s)\n", opt$`n-jobs`))
 pred <- SingleR(test = q, ref = r, labels = ref_labels,
-                de.method = "classic")   # correlation-based (Spearman), STAMP-like
+                de.method = "classic", BPPARAM = bp)   # correlation-based (Spearman), STAMP-like
 
 out <- data.frame(
   barcode      = colnames(q),
