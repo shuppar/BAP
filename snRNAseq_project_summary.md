@@ -58,7 +58,7 @@
 
 ## 1b. Implementation Status
 
-**All phases through 8g implemented and run on the workstation; 8b main DE done; 8b follow-ups (disruption + shuffle null) done for brain main + 3 focal subclusters; 8c–8d smoke-tested; 8e PRODUCTION-COMPLETE; 8f PRODUCTION-COMPLETE; 8g PRODUCTION-COMPLETE.** **Phase 9 (cross-species) PLACENTA ARM PRODUCTION-COMPLETE (2026-06-25): two independent human-placenta validations (Gunter-Rahman obesity + Admati PE), full RRHO → permutation null → concordant GSEA → leading-edge → plots. Brain ARM A (psychiatric/neurodevelopmental) not yet started.** Cross-tissue (8f) and cross-age (8g) views operate on completed 8b/8c CSVs so they need no re-runs.
+**All phases through 8g implemented and run on the workstation; 8b main DE done; 8b follow-ups (disruption + shuffle null) done for brain main + 3 focal subclusters; 8c–8d smoke-tested; 8e PRODUCTION-COMPLETE; 8f PRODUCTION-COMPLETE; 8g PRODUCTION-COMPLETE.** **Phase 9 (cross-species) PLACENTA ARM PRODUCTION-COMPLETE (2026-06-25): two independent human-placenta validations (Gunter-Rahman obesity + Admati PE), full RRHO → permutation null → concordant GSEA → leading-edge → plots.** **Phase 9 BRAIN ARM COMPUTE-COMPLETE (2026-06-29): four independent human validations (Velmeshev ASD, Maitra MDD-female, Nagy MDD-male, Macnair MS) through the same engine (`h10*`) — prep + RRHO + permutation null + concordant GSEA + leading-edge + TF + diagnostics + comprehensive plots. Headline: mouse prenatal-stress neuronal programs converge strongly + directionally on human MDD cortex (both sexes); the 8f/8g IFN/immune thread is recovered as microglial co-suppression in MDD/ASD and inverts (up) in MS.** **Phase 9 BRAIN ARM 5 (Hwang/Girgenti 2025 PTSD/MDD dlPFC, `h10f`) IN PROGRESS (2026-07-01): a fifth, on-target *trauma* arm being built by reclustering the deposited counts (Zenodo 15186498, open CC-BY) through the SAME pipeline as the other four brain arms and the mouse data — own scVI+Leiden+marker annotation, own PyDESeq2 rankings — for cross-Fig-4 consistency; the authors' Supplementary Tables are retained purely as a validation/cross-check layer, never as pipeline input. Motivating test: PTSD microglia are suppressed (SPP1 down) while MDD microglia are up, so PTSD should be concordant with the mouse microglial IFN/immune down-thread and MDD divergent — a PTSD-vs-MDD internal directional control within one dataset.** Cross-tissue (8f) and cross-age (8g) views operate on completed 8b/8c CSVs so they need no re-runs.
 
 > **Workstation target** (where production runs go; see §3 for detail):
 > Linux box, **258 GB RAM, 56 CPU cores, 1× NVIDIA RTX 4500 Ada (24 GB VRAM)**.
@@ -91,7 +91,8 @@
 | 8g Cross-age / persistence | ✓ PRODUCTION-COMPLETE — comprehensive + B/C/View-7 | `08g_cross_age.py` |
 | **9 Cross-species — PLACENTA, Gunter-Rahman (obesity)** | **✓ PRODUCTION-COMPLETE (2026-06-25)** | `h09a`–`h09h`, `h09_summary_plots.py` |
 | **9 Cross-species — PLACENTA, Admati (PE 2×2)** | **✓ PRODUCTION-COMPLETE (2026-06-25)** | `h09j`, `h09k`, `h09k_diagnostics.py`, `h09k_plots.py`, `h09k_rrho_maps.py` |
-| **9 Cross-species — BRAIN (ARM A)** | **not started** | (planned, same `h09*` pattern) |
+| **9 Cross-species — BRAIN (4 datasets)** | **✓ COMPUTE-COMPLETE (2026-06-29)** | `h10a`–`h10e`, `h10b_brain_rrho.py` (engine), `h10b_diagnostics.py`, `h10b_rrho_maps.py`, `h10_summary_plots.py` |
+| **9 Cross-species — BRAIN ARM 5 (Hwang/Girgenti PTSD/MDD, `h10f`)** | **⏳ IN PROGRESS (2026-07-01) — recluster + own DE, then RRHO via `h10b`** | `h10f_prep_hwang.py` (+ reuse `h10b` engine, `h10f_validate_vs_tables.py`) |
 
 **Naming convention (locked 2026-06-25):** human-side scripts are `h09X_...` (e.g. `h09a_prep_human_placenta.py`); R workers are `h_run_*.R` / `h_fetch_*.R` (e.g. `h_run_soupx_from_raw.R`, `h_fetch_genesets.R`). This keeps the human cross-species arm visually separate from the numbered mouse pipeline.
 
@@ -269,7 +270,74 @@ Files: `sc_admati.zip` (29 filtered Cell Ranger mtx triplets + `PE_samples_metad
 - **Vento-Tormo 2018** (first-trimester reference, CELLxGENE) — SingleR ref.
 - **Marsh 2022 GSE198373** (mid-gestation) — downloaded, DROPPED from Phase 9 (no stress contrast; E12.5 anchor only).
 - **ECHO-PATHWAYS** (dbGaP phs003619 CANDLE + phs003620 GAPPS) — only measured-psychological-stress placenta data; BULK; controlled-access (2–6 mo). PI action item; checklist at `refs/dbgap_application_checklist.md`. Revision-stage upgrade.
-- **Brain ARM A (downloaded, not yet processed):** Herring 2022 GSE168408, Maitra 2023 GSE213982, Nagy 2020 GSE144136, Velmeshev 2019. Most author-annotated (pseudobulk-ready); Herring raw (age-anchor only).
+- **Brain (PROCESSED — see brain section below):** Velmeshev 2019, Maitra 2023 GSE213982, Nagy 2020 GSE144136, Macnair 2025 (Zenodo 8338963). **Hwang/Girgenti 2025 PTSD/MDD dlPFC (Zenodo 15186498, open CC-BY) — ADDED 2026-07-01 as brain ARM 5 (`h10f`, in progress; reclustering).** Herring 2022 GSE168408 deferred (age-anchor, raw, 24GB tar).
+
+### Phase 9: Cross-Species Validation — BRAIN ARM (h10*) — COMPUTE-COMPLETE (2026-06-29)
+
+Tests whether the mouse prenatal-stress brain signature (8f/8g threads: ECM/mesenchymal, IFN/immune, gliogenesis) shows convergent gene-expression/pathway changes in human psychiatric/neurodevelopmental/demyelinating cortex. **Similarity, NOT etiology** — no human prenatal-stress paradigm exists.
+
+**Four independent datasets, same engine (`h10*`), reported separately:**
+
+| Dataset | Disorder | Region | Donors | Unit | Modality | Condition source |
+|---|---|---|---|---|---|---|
+| Velmeshev 2019 (UCSC) | ASD (peds 4–22y) | PFC+ACC | 31 | sample (indiv×region) | scRNA | `meta.tsv` `diagnosis` |
+| Maitra 2023 (GSE213982, F) | MDD female | dlPFC BA9 | 18/20 | donor | snRNA | `maitra_donor_meta.csv` |
+| Nagy 2020 (GSE144136) | MDD male | dlPFC BA9 | 17/17 | donor | scRNA | barcode-inline |
+| Macnair 2025 (Zenodo 8338963) | MS (stressed-glia ref) | GM+WM | 26/54 | donor | snRNA | `col_data` `diagnosis` |
+
+(Nagy is the male MDD arm standalone; the GSE213982 combined matrix folds Nagy males in as M1–M34 but the M#→Nagy crosswalk is unrecoverable — Nagy standalone keeps condition inline.) Herring 2022 deferred (age-anchor only).
+
+**Method (engine identical to placenta h09, functions lifted VERBATIM from h09e/h09g/h09h/h09k):**
+- **Bridge = broad 7-class** {ExN, InN, Ast, Oli, OPC, Mic, Endo} (brain types ARE homologous, unlike trophoblast). Finer human subtypes = exploratory secondary (Velmeshev sensitivity variant only).
+- **Two tiers:** T1 whole-mouse-brain × all 7; T2 mouse `Isocortex` (ABC region token) neurons × human cortical neurons. Isocortex carries ONLY ExN/InN by construction → T2 = neurons; glia T1-only (the microglial IFN thread can't get cortical restriction — stated).
+- **Full 3×2 mouse grid, no anchor pre-selection:** 3 ages (P1/4W/3mo) × {early_vs_relaxed, late_vs_relaxed} = 6 rankings/celltype. NO diagonal hypothesis; age-matched cells highlighted not pre-collapsed.
+- **Mouse rankings = reuse 08b Wald `stat`** (no recompute, identical to paper Figs 2/3), bridged to human symbols via `mouse_human_orthologs.tsv`. **Human rankings = PyDESeq2 from the h10a/c/d/e pseudobulk parquet** (`~ [sex+] diagnosis`; sex auto-drops when constant).
+- **RRHO → 5000-shuffle permutation null → concordant GSEA (two single-species fgsea, intersect FDR<0.05 same-sign) → leading-edge → TF (CollecTRI human ULM).** `refs/msigdb_human.tsv`.
+- **`robust_class` guard (NEW):** the argmax label flips on noise; trust the directional label only if (margin ≥25% of peak AND Spearman sign agrees: concordant→r>0, discordant→r<0) else `ambiguous`. Shuffle null runs on EVERY cell — magnitude always tested, direction withheld when fragile. The RRHO MAP is ground truth.
+
+**Diagnostics (`h10b_diagnostics.py`) MANDATORY before interpretation** — peak-vs-vector-strength, quadrant decomposition, age-specificity. Established the findings are real, not mechanical.
+
+**Findings (diagnostics-confirmed):**
+- **Neurons dominate every dataset by RRHO peak** (ExN/InN top-2 human celltypes in all four).
+- **MDD (both sexes) = headline: strong, directional, neuron-specific DOWN-concordance at mouse 4W.** Maitra `4W ExN→ExN` peak 232 (concordant_down, margin 17, Spearman +0.33, p=2e-4); `4W InN→InN` peak 213 (margin 56, r +0.29) — the strongest, most coherent cross-species cells in the whole project. Nagy replicates (4W ExN 105, InN 76, Oli 61). 4W wins ONLY neuron rows (glia peak 3mo) → celltype+age-specific, NOT mechanical.
+- **Sex nuance:** female-MDD (Maitra) adds Mic (peak 26); male-MDD (Nagy) adds Oli (61).
+- **ASD (Velmeshev): weaker, bidirectional, perinatal.** P1 ExN/InN peaks ~49 but ALL `ambiguous` (near-tied quadrants, flat Spearman) — significant magnitude, untrustworthy direction. Genuinely different/weaker than MDD.
+- **MS (Macnair): weak, glia-leaning** by peak. Distinct from psychiatric arms — stressed-glia framing holds.
+- **TFs did NOT null** (unlike placenta): 37/156/137/47 concordant TFs (Velm/Mait/Nagy/Macn); many recur across grid cells.
+
+**The 8f/8g THREADS recovered in human (pathway-keyed lens — see plotting note):**
+- **IFN/immune co-suppression is CONSERVED and MICROGLIAL.** Maitra/Nagy/Velmeshev microglia: 40–48 concordant immune pathways each, almost entirely `down_both` — the exact 8g signature (INTERFERON_ALPHA/GAMMA_RESPONSE, INTERFERON_SIGNALING, TNFA_SIGNALING_VIA_NFKB), NES strongly negative both species, P1-prominent (matches 8g "IFN perinatal-transient"). **This is the 8f/8g IFN/immune thread recovered in human MDD + ASD cortex.**
+- **MS INVERTS the IFN direction — a clean directional control.** Macnair microglia show only 4 concordant immune rows, all `up_both`. Direct check of the MS microglial ranking: canonical IFN/inflammatory genes are strongly UP in MS (median Wald +1.05; IRF7 +2.7, NFKB1 +3.9, BST2 +4.2, C1QA +2.9 — classic neuroinflammation), while mouse prenatal-stress microglia go DOWN (median −1.15). Opposite directions → legitimately non-concordant. **MS microglia ARE inflamed — just opposite to prenatal stress.** Confirms stress-suppresses / MS-activates; a mechanistic validation of the "MS ≠ etiology" framing.
+- **ECM/mesenchymal (164 concordant rows) and gliogenesis (34 rows) threads also present** — EPITHELIAL_MESENCHYMAL_TRANSITION, MESENCHYMAL_CELL_DIFFERENTIATION, COLLAGEN_FORMATION; GLIOGENESIS, GLIAL_CELL/ASTROCYTE_DIFFERENTIATION. The full 8f/8g spine is recoverable.
+
+**Key plotting lesson (locked):** peak-keyed views (overview/master/maps) are dominated by neurons (bulk gene overlap) and STRUCTURALLY HIDE small-but-coherent programs like microglial IFN (small peak, tight pathway). Pathway-keyed views (thread-scanner, Mic/IFN) gate on GSEA FDR — NOT RRHO peak — and surface the threads. **Both lenses are kept; they answer different questions** ("where is bulk overlap" vs "which coherent programs are conserved").
+
+**Interpretation (locked):** *Mouse prenatal-stress neuronal programs converge most strongly on human MDD cortex (directional, both sexes, mouse 4W signature); the IFN/immune thread is recovered as microglial co-suppression in MDD/ASD and inverts in MS; ECM and gliogenesis threads also present — with a weaker/bidirectional ASD signature and a distinct/inverted MS signature establishing disorder-specificity.* The Fig 4 brain anchor.
+
+**Scripts:** `h10a_prep_velmeshev.py` (transposed TSV, ENSG|SYM split, primary+sensitivity), `h10c/d/e_prep_*` (mtx triplets → pseudobulk parquet), `h10b_brain_rrho.py` (engine: `--dataset --variant --n-perm --n-jobs --tf`), `h10b_diagnostics.py`, `h10b_rrho_maps.py`, `h10_summary_plots.py` (comprehensive: peak-keyed overview/master/maps + pathway-keyed thread-scanner/Mic-IFN; filter `empirical_p<0.05` for peak views, GSEA-FDR for pathway views; CSV/parquet-only, Mac-runnable).
+
+**Outputs:** `data/human_validation/brain/<ds>/{tables,plots}/` + `_synthesis/plots/` (01_overview, 02_master, 03_thread_scanner, 04_microglia_ifn, 05_ifn_all_celltypes).
+
+**Caveats:** Velmeshev/Nagy scRNA vs mouse/Maitra/Macnair snRNA (modality); RRHO peaks n-sensitive (compare within column); Macnair no SoupX + no GM/WM bridge (mouse whole-brain, unit=donor); "age-matched" is a soft guess (strongest MDD signal lands at mouse 4W regardless of human age); no dam ID (8b caveat carries).
+
+> **OPEN:** the placenta arm (h09e/h09k) used margin-free argmax labels; findings stand (only the known E18.5×loPE×trophoblast cell was fragile, already handled) but the `robust_class` margin guard should be backported at revision for Fig-4-wide consistency.
+
+### Phase 9: Cross-Species Validation — BRAIN ARM 5 (Hwang/Girgenti PTSD/MDD, `h10f`) — IN PROGRESS (2026-07-01)
+
+A fifth brain arm and the single most on-target *stress* dataset available: **Hwang/Girgenti et al. 2025 *Nature*, "Single-cell transcriptomic and chromatin dynamics of the human brain in PTSD"** — snRNA-seq dlPFC, **935,371 discovery nuclei × 27,982 genes, 105 donors (39 CON / 36 MDD / 36 PTSD)**, single region. PTSD is the closest adult analog to prenatal stress, and the paper reports **microglial pro-inflammatory SPP1 signalling *decreased* in PTSD but *increased* in MDD** — i.e. neuroimmune/microglial *suppression* specific to the PTSD brain. Since the mouse prenatal-stress microglia go DOWN on the IFN/immune thread, the prediction is clean: **PTSD concordant, MDD divergent — a PTSD-vs-MDD internal directional control within one dataset/pipeline** (tighter than the cross-dataset MS inversion).
+
+**Data provenance & the deposit gotcha (locked).** Zenodo 15186498 (open, CC-BY-4.0). Files: `RNA_count_mat.npz` (**scipy sparse COO, uint32, cells×genes, nnz≈2.85B — NOT dense**, despite the repo's `get_RNA_count_matrix.py` `toarray`+`savez` script which did not generate the deposit), `RNA_cellnames.txt` (`{MS####XX channel}-{16bp barcode}`, 105 channels), `RNA_genenames.txt` (9-col CSV, col1 = ENSG). **The per-cell obs (celltype `anno`, `Condition`, `Channel`) was NOT deposited** — it lives in the undeposited `RNA_FINAL.zarr`. So the snRNA download is counts + barcodes + genes only; diagnosis and celltype must be recovered externally.
+
+**Decision (locked 2026-07-01): recluster from scratch, do NOT shortcut off the tables.** Build `h10f` through the **same pipeline as the other four brain arms and the mouse data** — own scVI (batch = channel, BF16) + Leiden + marker annotation (their `lake_genes` panel → broad-7), own PyDESeq2 `~ sex + Condition` rankings, then the `h10b` RRHO engine. Consistency across Fig 4 outranks the (available) shortcut of ranking directly off the authors' supplementary DE tables. Diagnosis is recovered from **Supplementary Table 1** (channel `MS####XX` → Condition/Sex; 105 channels all join cleanly). ENSG→symbol via `refs/mouse_human_orthologs.tsv` `human_ensembl` (no extra pybiomart call). **No SoupX** (filtered counts only, no raw — flagged, like Admati). Two human contrasts (PTSD-vs-CON, MDD-vs-CON) run against the same mouse 08b rankings; `robust_class` guard native.
+
+**Supplementary Tables = validation/cross-check layer ONLY (never pipeline input).** The authors' published per-gene results are retained at `data/human_validation/brain/hwang_ptsd/supp/` purely to sanity-check our own reclustered analysis:
+- **Table 6** — DESeq2 pseudobulk, PTSD+MDD × celltype, **sig-only (FDR ≤ 0.05)**, `Genename/Condition/Celltype/log2FC/FDR`. Direction/effect-size cross-check against our DESeq2, including the **MIC PTSD-down / MDD-up SPP1 check** (the headline internal control). Matched estimator (DESeq2) but truncated.
+- **Table 3 (MAST)** and **Table 4 (Wilcox)** — **full transcriptome** (FDR spans 0→~1), `Genename`+`Geneid`(ENSG) + `PTSD/MDD {MAST,Wilcox} log2FC`+`FDR`, all 16 author celltypes. Full-ranking concordance references (different estimator than our DESeq2 — for rank cross-check only).
+- **Table 2** — cells per celltype/subtype: annotation sanity-check against our cluster proportions.
+- **Table 1** — sample metadata: the diagnosis source + demographic covariates (Sex/Ancestry/AgeDeath/PMI/RIN/Smoking/Antidepressant).
+- Author celltype scheme (from `utils/lists.py`): coarse `class` {EXC, INH, OLG, OPC, END, AST, MG} + fine `subclass` {CUX2/RORB/FEZF2/OPRK1 (EXC), LAMP5/KCNG1/VIP/SST/PVALB (INH)} → maps onto broad-7. `h10f_validate_vs_tables.py` reports per-celltype sign-concordance + the SPP1 panel.
+
+**Scripts (planned):** `h10f_prep_hwang.py` (sparse-load counts → CSR; join Condition/Sex from Table 1 by channel prefix; ENSG→symbol; QC-light → HVG → scVI → Leiden → marker-annotate broad-7 → pseudobulk per donor×celltype → emit `h10f_hwang_rankings.parquet` mirroring `h10b_<ds>_rankings.parquet`), then `h10b_brain_rrho.py --dataset hwang --dx-contrast {PTSD,MDD} --tf`, `h10b_diagnostics.py`, `h10f_validate_vs_tables.py`, `h10_summary_plots.py`. Smoke-test on 2 channels before the full scVI run (GPU, ~2–4 hr).
 
 ### Phase 10: Reproducibility
 Run logs, config snapshots, fixed seeds, `uv.lock` + `renv.lock` committed, git, `manifest.json` with checksums.
@@ -338,7 +406,7 @@ uv run python scripts/h09k_rrho_maps.py                    # plots (Mac-runnable
 - **Fig 3 (cross-tissue cascade + persistence, 8f+8g):** three threads — ECM/mesenchymal, IFN/immune (perinatal-transient), gliogenesis.
 - **Fig 4 (cross-species placenta validation):** the mouse prenatal-stress placental signature recapitulated in human placenta. **Two independent stressors:** (a) Gunter-Rahman obesity — decidua/vascular/trophoblast concordant (permutation-backed), HALLMARK_HYPOXIA conserved with ~40% gene-level overlap; (b) Admati PE — **two conserved axes:** eoPE recovers the same hypoxia program (third independent stressor; same genes), loPE recovers OXPHOS/electron-transport suppression. Honest nuance: GA-matched diagonal not stronger; immune weak; TF null. The convergence of mouse stress + human obesity + human eoPE on one hypoxia gene set (NDRG1/BNIP3L/ANGPTL4/DDIT4/SLC2A1/PGK1) is the headline.
 
-**Decisive unknown for tier:** the **brain** cross-species arm (Phase 9 ARM A) — does the brain stress signature recover in human psychiatric/neurodevelopmental cortex? Placenta arm done; brain arm next.
+**Decisive tier driver — NOW RESOLVED:** the **brain** cross-species arm (Phase 9 brain, COMPUTE-COMPLETE 2026-06-29). The mouse brain stress signature DOES recover in human cortex: strong directional neuronal-down concordance with human MDD (both sexes, mouse 4W), the 8f/8g IFN/immune thread recovered as microglial co-suppression in MDD/ASD (inverting in MS), plus ECM and gliogenesis threads. Both placenta and brain cross-species arms are now done → the cross-species package supports the upper-tier framing. **A fifth brain arm (Hwang/Girgenti PTSD/MDD, `h10f`, in progress) adds the closest adult *trauma* analog and a PTSD-vs-MDD internal directional control (predicted: PTSD microglia suppressed → concordant with mouse; MDD microglia up → divergent), strengthening the Fig 4 brain panel.**
 
 **To strengthen:** RNAscope/IHC of top findings; behavioral validation; brain cross-species; ECHO-PATHWAYS measured-stress upgrade at revision.
 
@@ -354,7 +422,8 @@ Remote via VPN+SSH from Mac; uv+renv; tmux; HTML reports. Code edits local → r
 **Mouse arm COMPLETE through 8g. Phase 9 PLACENTA cross-species COMPLETE (Gunter-Rahman + Admati).**
 
 **Immediate:**
-1. **Phase 9 BRAIN ARM A** — apply the same `h09*` pattern to the downloaded brain datasets (Nagy/Maitra/Velmeshev open; Herring age-anchor). ARM A psychiatric/neurodevelopmental + ARM B (MS stressed-glia, NOT etiology). Smoke-test on Velmeshev first. **This is the publication-tier pivot** — does the mouse brain stress signature (ECM/IFN/gliogenesis threads) recover in human cortex?
+1. **Phase 9 BRAIN ARM 5 — Hwang/Girgenti PTSD/MDD (`h10f`) — IN PROGRESS (2026-07-01).** Recluster the deposited counts (Zenodo 15186498) through the standard pipeline; diagnosis from Supp Table 1, own scVI/Leiden/marker annotation → own PyDESeq2 → `h10b` RRHO (PTSD-vs-CON + MDD-vs-CON). Validate against Supp Tables 1/2/3/6 (`h10f_validate_vs_tables.py`), especially the MIC PTSD-down/MDD-up SPP1 internal control. Folds into Fig 4 as the trauma arm + PTSD/MDD directional control.
+2. **Phase 9 BRAIN ARM (4 datasets) — COMPUTE-COMPLETE (2026-06-29).** Four datasets (Velmeshev/Maitra/Nagy/Macnair) through `h10*`. **Remaining:** (a) Fig 4 brain figure refinement — the comprehensive plots exist (peak-keyed + pathway-keyed); iterate any panel that doesn't tell the story (the placenta Fig 4 was flagged "not yet representative" — apply that scrutiny); (b) write a standalone brain cross-species findings doc (like the 8f/8g one) before folding into the manuscript; (c) run the Velmeshev sensitivity variant (`--variant sensitivity`, Neu-NRGN/Neu-mat→ExN) into a quarantined subfolder + README; (d) optional: Herring 2022 age-anchor; (e) backport the `robust_class` margin guard to the placenta arm at revision.
 2. **Figure refinement for Fig 4** — current placenta plots are functional but not yet "representative"; redesign deferred (options discussed: multi-stressor conserved-gene heatmap; compartment×pathway bubble grid; story-driven schematic).
 3. **Documentation** — this summary + INSTRUCTIONS.md kept current (done 2026-06-25).
 
@@ -382,6 +451,7 @@ Remote via VPN+SSH from Mac; uv+renv; tmux; HTML reports. Code edits local → r
 | **Phase-9 human GSEA** | **two single-species fgsea → intersect FDR<0.05 same-sign** | **cleanest provenance; mirrors 8c** |
 | **Phase-9 mouse anchor** | **E18.5 Late-vs-Relaxed (both arms); + E12.5 Early-vs-Relaxed for Admati 2×2** | **all human stressors commensurable to one mouse signature** |
 | **Admati PE arm** | **sc all-compartments (author-annotated) primary; sn trophoblast deferred (3v2)** | **powered, all compartments; modality caveat (sc) stated** |
+| **Hwang PTSD arm (h10f)** | **recluster from deposited counts (own scVI/annotation/DE); authors' Supp Tables = cross-check only, NOT input** | **consistency with the other 4 brain arms + mouse outranks the tables-shortcut; obs (celltype) not deposited anyway** |
 | **GA-matched 2×2 framing** | **tested, REJECTED — structure is by PE subtype not stage** | **diagonal not stronger; eoPE→hypoxia, loPE→OXPHOS** |
 | Environment | uv + renv (not conda) | Conda blocked at firewall |
 | Python↔R bridge | R as subprocess | Process isolation |
