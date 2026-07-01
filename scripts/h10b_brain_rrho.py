@@ -116,6 +116,7 @@ AGE_MATCH = {
     "velmeshev": ["4W", "3mo"],   # peds/adolescent ASD
     "maitra": ["3mo"], "nagy": ["3mo"],   # adult MDD
     "macnair": ["3mo"],                   # adult MS
+    "hwang": ["3mo"],                     # adult PTSD/MDD
 }
 
 # per-dataset human config: pseudobulk parquet + meta + condition contrast
@@ -143,6 +144,14 @@ DATASETS = {
         pb="h10e_macnair_pseudobulk_{variant}.parquet",
         meta="h10e_macnair_group_meta_{variant}.csv",
         cond_col="diagnosis", test="MS", ref="Control", covar="sex",
+    ),
+    "hwang": dict(    # PTSD + MDD dlPFC (Hwang/Girgenti 2025); 3-level diagnosis {CON,MDD,PTSD}.
+        # test is set at runtime by --dx-contrast (PTSD or MDD); reader's isin([ref,test]) drops
+        # the third arm -> a PTSD-vs-CON / MDD-vs-CON internal directional control in one dataset.
+        sub="hwang_ptsd",
+        pb="h10f_hwang_pseudobulk_{variant}.parquet",
+        meta="h10f_hwang_group_meta_{variant}.csv",
+        cond_col="diagnosis", test=None, ref="CON", covar="sex",
     ),
 }
 
@@ -226,12 +235,22 @@ def main():
     ap.add_argument("--variant", default="primary", choices=["primary", "sensitivity"])
     ap.add_argument("--n-perm", type=int, default=5000)
     ap.add_argument("--n-jobs", type=int, default=24)
+    ap.add_argument("--dx-contrast", choices=["PTSD", "MDD"], default=None,
+                    help="hwang only: which arm vs CON (ref). Required for --dataset hwang; "
+                         "run once per arm (outputs suffixed _PTSD / _MDD so they don't clobber).")
     ap.add_argument("--tf", action="store_true",
                     help="also compute concordant TF activity (CollecTRI human ULM); "
                          "off by default since placenta showed single-vector ULM nulls")
     args = ap.parse_args()
 
-    ds = DATASETS[args.dataset]
+    ds = dict(DATASETS[args.dataset])   # copy: dx-contrast override must not mutate the registry
+    if args.dx_contrast:
+        if args.dataset != "hwang":
+            sys.exit("--dx-contrast only applies to --dataset hwang")
+        ds["test"] = args.dx_contrast
+    elif ds.get("test") is None:
+        sys.exit(f"--dataset {args.dataset} requires --dx-contrast {{PTSD,MDD}} (3-level diagnosis)")
+    out_tag = args.dataset + (f"_{args.dx_contrast}" if args.dx_contrast else "")
     tab = BRAIN / ds["sub"] / "tables"
     tab.mkdir(parents=True, exist_ok=True)
     age_match = set(AGE_MATCH.get(args.dataset, []))
@@ -287,8 +306,8 @@ def main():
         for g, v in s.items():
             rank_rows.append({"side": "human", "contrast": ds["test"], "age": "human",
                               "level": "human", "celltype": broad, "gene": g, "stat": v})
-    pd.DataFrame(rank_rows).to_parquet(tab / f"h10b_{args.dataset}_rankings.parquet")
-    print(f"[h10b] rankings -> {tab / f'h10b_{args.dataset}_rankings.parquet'}")
+    pd.DataFrame(rank_rows).to_parquet(tab / f"h10b_{out_tag}_rankings.parquet")
+    print(f"[h10b] rankings -> {tab / f'h10b_{out_tag}_rankings.parquet'}")
 
     rrho_rows, pw_rows, le_rows, tf_rows = [], [], [], []
     for cname in mouse:
@@ -371,16 +390,16 @@ def main():
                                     "FDR_mouse": tr["FDR_mouse"], "FDR_human": tr["FDR_human"]})
 
     rrho = pd.DataFrame(rrho_rows)
-    pd.DataFrame(rrho_rows).to_csv(tab / f"h10b_{args.dataset}_rrho_summary.csv", index=False)
-    pd.DataFrame(pw_rows).to_csv(tab / f"h10b_{args.dataset}_concordant_pathways.csv", index=False)
-    pd.DataFrame(le_rows).to_csv(tab / f"h10b_{args.dataset}_leading_edge.csv", index=False)
+    pd.DataFrame(rrho_rows).to_csv(tab / f"h10b_{out_tag}_rrho_summary.csv", index=False)
+    pd.DataFrame(pw_rows).to_csv(tab / f"h10b_{out_tag}_concordant_pathways.csv", index=False)
+    pd.DataFrame(le_rows).to_csv(tab / f"h10b_{out_tag}_leading_edge.csv", index=False)
     if args.tf:
-        pd.DataFrame(tf_rows).to_csv(tab / f"h10b_{args.dataset}_concordant_tfs.csv", index=False)
+        pd.DataFrame(tf_rows).to_csv(tab / f"h10b_{out_tag}_concordant_tfs.csv", index=False)
         print(f"[h10b] concordant TFs: {len(tf_rows)} -> "
-              f"{tab / f'h10b_{args.dataset}_concordant_tfs.csv'}")
+              f"{tab / f'h10b_{out_tag}_concordant_tfs.csv'}")
 
     print(f"\n[h10b] RRHO summary ({len(rrho)} cells) -> "
-          f"{tab / f'h10b_{args.dataset}_rrho_summary.csv'}")
+          f"{tab / f'h10b_{out_tag}_rrho_summary.csv'}")
     if not rrho.empty:
         print(rrho.sort_values("concordance_peak", ascending=False)
               .head(20)[["contrast", "mouse_age", "level", "mouse_ct", "human_ct",
